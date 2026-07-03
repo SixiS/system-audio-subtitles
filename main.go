@@ -19,6 +19,7 @@ type Config struct {
 	ShowOriginal bool
 	NoTranslate  bool
 	WordGapMS    int
+	MaxSentences int
 	StreamDelay  string
 	DebugEvents  bool
 }
@@ -34,6 +35,7 @@ func main() {
 	flag.BoolVar(&cfg.ShowOriginal, "show-original", false, "also show the untranslated text")
 	flag.BoolVar(&cfg.NoTranslate, "no-translate", false, "transcription only")
 	flag.IntVar(&cfg.WordGapMS, "word-gap", 1000, "milliseconds without new transcribed words that ends a segment")
+	flag.IntVar(&cfg.MaxSentences, "max-sentences", 3, "sentences in one live segment before it is force-cut into history (0 = no limit)")
 	flag.StringVar(&cfg.StreamDelay, "stream-delay", "low", "realtime delay/accuracy setting: minimal|low|medium|high|xhigh")
 	flag.BoolVar(&cfg.DebugEvents, "debug-events", false, "log raw realtime API events to stderr")
 	flag.Parse()
@@ -60,6 +62,9 @@ func main() {
 		}
 		if !set["word-gap"] && p.WordGapMS > 0 {
 			cfg.WordGapMS = p.WordGapMS
+		}
+		if !set["max-sentences"] && p.MaxSentences > 0 {
+			cfg.MaxSentences = p.MaxSentences
 		}
 	}
 

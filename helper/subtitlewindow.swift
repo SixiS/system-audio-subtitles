@@ -36,6 +36,7 @@ struct Prefs: Decodable {
     let no_translate: Bool
     let stream_delay: String
     let word_gap_ms: Int
+    let max_sentences: Int?
 }
 
 struct Msg: Decodable {
@@ -92,6 +93,13 @@ mainPara.alignment = .center
 mainPara.lineSpacing = 3
 mainPara.paragraphSpacing = 14
 
+// Sentences within one translation are their own paragraphs with a small gap;
+// the unit's last sentence carries mainPara's big between-sections gap.
+let sentPara = NSMutableParagraphStyle()
+sentPara.alignment = .center
+sentPara.lineSpacing = 3
+sentPara.paragraphSpacing = 5
+
 func sourceText(_ s: String) -> NSAttributedString {
     NSAttributedString(string: s, attributes: [
         .foregroundColor: NSColor.white.withAlphaComponent(0.4),
@@ -108,17 +116,26 @@ func timeText(_ s: String) -> NSAttributedString {
 }
 
 func mainText(_ s: String, alpha: CGFloat = 1.0) -> NSAttributedString {
-    NSAttributedString(string: s, attributes: [
+    let t = NSMutableAttributedString(string: s, attributes: [
         .foregroundColor: NSColor.white.withAlphaComponent(alpha),
-        .font: mainFont, .paragraphStyle: mainPara,
+        .font: mainFont, .paragraphStyle: sentPara,
     ])
+    // The last sentence's paragraph style is what puts the big gap after the
+    // whole unit; earlier sentences keep the small post-sentence gap.
+    let ns = s as NSString
+    if ns.length > 0 {
+        let lastBreak = ns.range(of: "\n", options: .backwards)
+        let start = lastBreak.location == NSNotFound ? 0 : lastBreak.location + 1
+        t.addAttribute(.paragraphStyle, value: mainPara,
+                       range: NSRange(location: start, length: ns.length - start))
+    }
+    return t
 }
 
-// Break after sentence-ending punctuation with a line separator (U+2028), not
-// "\n" — a newline would start a new paragraph and pick up the big
-// between-segments paragraphSpacing.
+// Start a new paragraph after sentence-ending punctuation; sentPara gives
+// these a small gap, distinct from the bigger between-sections gap.
 func sentenceBreaks(_ s: String) -> String {
-    s.replacingOccurrences(of: #"(?<=[.!?。！？])\s+"#, with: "\u{2028}",
+    s.replacingOccurrences(of: #"(?<=[.!?。！？])\s+"#, with: "\n",
                            options: .regularExpression)
 }
 
@@ -482,7 +499,7 @@ func promptForPrefs() {
     alert.addButton(withTitle: "Cancel")
 
     let rowH: CGFloat = 30
-    let rows: CGFloat = 6
+    let rows: CGFloat = 7
     let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: rows * rowH))
     func rowY(_ row: Int) -> CGFloat { (rows - CGFloat(row) - 1) * rowH + 4 }
     func addLabel(_ text: String, row: Int) {
@@ -530,6 +547,16 @@ func promptForPrefs() {
     gapField.stringValue = String(p.word_gap_ms)
     accessory.addSubview(gapField)
 
+    addLabel("Max sentences:", row: 6)
+    let maxSentField = NSTextField(frame: NSRect(x: 160, y: rowY(6), width: 70, height: 22))
+    maxSentField.stringValue = String(p.max_sentences ?? 3)
+    accessory.addSubview(maxSentField)
+    let maxSentHint = NSTextField(labelWithString: "per live segment; 0 = no limit")
+    maxSentHint.textColor = .secondaryLabelColor
+    maxSentHint.font = NSFont.systemFont(ofSize: 11)
+    maxSentHint.frame = NSRect(x: 238, y: rowY(6) + 2, width: 180, height: 18)
+    accessory.addSubview(maxSentHint)
+
     alert.accessoryView = accessory
     alert.window.initialFirstResponder = targetField
     NSApp.activate(ignoringOtherApps: true)
@@ -543,6 +570,7 @@ func promptForPrefs() {
             "no_translate": noTrans.state == .on,
             "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,
             "word_gap_ms": Int(gapField.stringValue) ?? p.word_gap_ms,
+            "max_sentences": Int(maxSentField.stringValue) ?? (p.max_sentences ?? 3),
         ] as [String: Any]])
     }
 }

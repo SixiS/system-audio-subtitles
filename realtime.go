@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/coder/websocket"
 )
@@ -31,13 +32,30 @@ const (
 	minCommitBytes = sampleRate * bytesPerSample / 5 // 200 ms
 )
 
-// wordActivity shares transcription-delta timing between the event reader
+// wordActivity shares transcription-delta state between the event reader
 // (which sees deltas arrive) and the audio writer (which decides commits).
 // hasWords is only ever true when lastDeltaNano is set: the reader stores the
 // timestamp first.
 type wordActivity struct {
 	hasWords      atomic.Bool  // the open (uncommitted) segment has transcribed words
 	lastDeltaNano atomic.Int64 // arrival time of its most recent delta
+	forceCommit   atomic.Bool  // segment hit --max-sentences; cut at the next opportunity
+}
+
+// sentenceCount counts sentence-ending punctuation followed by whitespace (or
+// end of text) — the same rule the window uses to insert line breaks, so the
+// --max-sentences cut matches what the user sees pile up.
+func sentenceCount(s string) int {
+	n := 0
+	rs := []rune(s)
+	for i, r := range rs {
+		if strings.ContainsRune(".!?。！？", r) {
+			if i == len(rs)-1 || unicode.IsSpace(rs[i+1]) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 var streamedAudioBytes atomic.Int64
@@ -170,6 +188,7 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 				// segment order is established downstream.
 				closed[ev.ItemID] = true
 				act.hasWords.Store(false) // the open segment starts fresh
+				act.forceCommit.Store(false)
 				send(SegmentUpdate{ItemID: ev.ItemID})
 			case "conversation.item.input_audio_transcription.delta":
 				texts[ev.ItemID] += ev.Delta
@@ -178,6 +197,9 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 					// segments mustn't count or they'd trigger spurious commits.
 					act.lastDeltaNano.Store(time.Now().UnixNano())
 					act.hasWords.Store(true)
+					if cfg.MaxSentences > 0 && sentenceCount(texts[ev.ItemID]) >= cfg.MaxSentences {
+						act.forceCommit.Store(true) // runaway monologue — cut without waiting for a pause
+					}
 				}
 				send(SegmentUpdate{ItemID: ev.ItemID, Text: texts[ev.ItemID]})
 			case "conversation.item.input_audio_transcription.completed":
@@ -258,14 +280,16 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 		}
 		// The lastCommit guard covers the gap before the server's committed
 		// event resets hasWords — without it we'd re-commit immediately.
-		if act.hasWords.Load() &&
-			time.Since(time.Unix(0, act.lastDeltaNano.Load())) >= wordGap &&
-			time.Since(lastCommit) >= wordGap {
-			if err := commit(); err != nil {
-				if ctx.Err() != nil {
-					return nil
+		if act.hasWords.Load() && time.Since(lastCommit) >= wordGap {
+			gapElapsed := time.Since(time.Unix(0, act.lastDeltaNano.Load())) >= wordGap
+			if gapElapsed || act.forceCommit.Load() {
+				act.forceCommit.Store(false)
+				if err := commit(); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
 				}
-				return err
 			}
 		}
 	}

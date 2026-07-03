@@ -38,8 +38,8 @@ While running, a **captions icon in the menu bar** (and a gear in the window's
 top bar) has the settings:
 
 - *Preferences…* — target/source language, show-original, transcription-only,
-  latency, and sentence gap. Saved changes apply immediately (the live session
-  restarts) and persist in the config file.
+  latency, sentence gap, and max sentences per segment. Saved changes apply
+  immediately (the live session restarts) and persist in the config file.
 - *Edit API Key…* — applies immediately; a broken key shows a red error in the
   window until it's fixed.
 - *Clear API Key & Quit* — deletes the stored key (preferences survive) and
@@ -61,6 +61,8 @@ echoed to the terminal as a plain transcript.
 --no-translate        transcription only
 --stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
 --word-gap 1000       milliseconds without new transcribed words that ends a segment
+--max-sentences 3     force-cut a live segment into history after this many
+                      sentences, even without a pause (0 = no limit)
 ```
 
 All of these are also editable in the window's Preferences dialog, which

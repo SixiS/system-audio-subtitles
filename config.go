@@ -19,6 +19,7 @@ type Prefs struct {
 	NoTranslate  bool   `json:"no_translate"`
 	StreamDelay  string `json:"stream_delay"`
 	WordGapMS    int    `json:"word_gap_ms"`
+	MaxSentences int    `json:"max_sentences"`
 }
 
 type storedConfig struct {
@@ -91,6 +92,7 @@ func prefsFromConfig(cfg Config) Prefs {
 		NoTranslate:  cfg.NoTranslate,
 		StreamDelay:  cfg.StreamDelay,
 		WordGapMS:    cfg.WordGapMS,
+		MaxSentences: cfg.MaxSentences,
 	}
 }
 
@@ -109,4 +111,5 @@ func applyPrefs(cfg *Config, p Prefs) {
 	if p.WordGapMS > 0 {
 		cfg.WordGapMS = max(p.WordGapMS, 150)
 	}
+	cfg.MaxSentences = max(p.MaxSentences, 0) // 0 = no limit
 }
