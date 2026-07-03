@@ -115,13 +115,11 @@ func clipTail(s string, max int) string {
 // --- native window ---
 
 type windowDisplay struct {
-	cfg    Config
-	cmd    *exec.Cmd
-	pipe   io.WriteCloser
-	in     *bufio.Writer
-	done   chan struct{}
-	finals []Segment
-	live   []Segment
+	cfg  Config
+	cmd  *exec.Cmd
+	pipe io.WriteCloser
+	in   *bufio.Writer
+	done chan struct{}
 }
 
 type windowSeg struct {
@@ -152,10 +150,36 @@ func newWindowDisplay(cfg Config, onExit func()) (*windowDisplay, error) {
 	return w, nil
 }
 
-func (w *windowDisplay) send() {
-	all := append(append([]Segment{}, w.finals...), w.live...)
-	segs := make([]windowSeg, 0, len(all))
-	for _, s := range all {
+func (w *windowDisplay) sendJSON(v any) {
+	data, _ := json.Marshal(v)
+	w.in.Write(data)
+	w.in.WriteByte('\n')
+	w.in.Flush()
+}
+
+// Finalize appends to the window's scrollable history.
+func (w *windowDisplay) Finalize(s Segment) {
+	msg := map[string]any{
+		"type":        "append",
+		"translation": s.Translation,
+		"time":        time.Now().Format("15:04:05"),
+	}
+	if w.cfg.ShowOriginal && s.Source != "" && s.Source != s.Translation {
+		msg["source"] = s.Source
+	}
+	if s.Translation != "" {
+		fmt.Println(s.Translation) // keep a plain transcript in the terminal too
+	}
+	w.sendJSON(msg)
+}
+
+// RenderLive replaces the window's pinned live area.
+func (w *windowDisplay) RenderLive(segs []Segment) {
+	out := make([]windowSeg, 0, len(segs))
+	for _, s := range segs {
+		if s.Source == "" && s.Translation == "" {
+			continue // committed but no transcript yet — nothing to show
+		}
 		ws := windowSeg{Translation: s.Translation, Final: s.TransFinal}
 		if ws.Translation == "" {
 			ws.Translation = "…"
@@ -163,28 +187,9 @@ func (w *windowDisplay) send() {
 		if w.cfg.ShowOriginal {
 			ws.Source = s.Source
 		}
-		segs = append(segs, ws)
+		out = append(out, ws)
 	}
-	data, _ := json.Marshal(map[string]any{"segments": segs})
-	w.in.Write(data)
-	w.in.WriteByte('\n')
-	w.in.Flush()
-}
-
-func (w *windowDisplay) Finalize(s Segment) {
-	w.finals = append(w.finals, s)
-	if len(w.finals) > 2 {
-		w.finals = w.finals[1:]
-	}
-	if s.Translation != "" {
-		fmt.Println(s.Translation) // keep a plain transcript in the terminal too
-	}
-	w.send()
-}
-
-func (w *windowDisplay) RenderLive(segs []Segment) {
-	w.live = segs
-	w.send()
+	w.sendJSON(map[string]any{"type": "live", "segments": out})
 }
 
 func (w *windowDisplay) Close() {

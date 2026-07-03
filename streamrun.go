@@ -104,6 +104,14 @@ func runStream(ctx context.Context, cfg Config, key string) error {
 			st.seg.TransFinal = u.Final
 			return
 		}
+		if u.Final && strings.TrimSpace(u.Text) == "" {
+			// Noise/music commits produce empty transcripts. There is nothing
+			// to translate — finalize immediately or this segment blocks the
+			// finalization queue (and history) forever.
+			st.seg.Translation = ""
+			st.seg.TransFinal = true
+			return
+		}
 		launch(st)
 	}
 
@@ -147,7 +155,9 @@ func runStream(ctx context.Context, cfg Config, key string) error {
 			if !st.seg.SrcFinal || !st.seg.TransFinal {
 				break
 			}
-			display.Finalize(st.seg)
+			if strings.TrimSpace(st.seg.Translation) != "" || strings.TrimSpace(st.seg.Source) != "" {
+				display.Finalize(st.seg) // empty segments retire silently
+			}
 			delete(states, order[0])
 			order = order[1:]
 		}
