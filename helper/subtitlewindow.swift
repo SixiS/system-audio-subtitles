@@ -37,6 +37,7 @@ struct Prefs: Decodable {
     let stream_delay: String
     let word_gap_ms: Int
     let max_sentences: Int?
+    let dock_icon: Bool?
 }
 
 struct Msg: Decodable {
@@ -55,6 +56,31 @@ var currentPrefs: Prefs?
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+
+// This process owns the app's Dock presence (the pipeline binary is a
+// faceless agent), so the "Show Dock icon" preference toggles our activation
+// policy. The icon file sits next to the executable in both layouts: the app
+// bundle (../Resources/icon.icns) and the dev tree (../assets/icon.png).
+let appIcon: NSImage? = {
+    guard let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() else { return nil }
+    let dir = exe.deletingLastPathComponent()
+    for rel in ["../Resources/icon.icns", "../assets/icon.png"] {
+        if let img = NSImage(contentsOf: URL(fileURLWithPath: rel, relativeTo: dir).standardizedFileURL) {
+            return img
+        }
+    }
+    return nil
+}()
+
+func applyDockIcon(_ show: Bool) {
+    let policy: NSApplication.ActivationPolicy = show ? .regular : .accessory
+    if app.activationPolicy() != policy {
+        app.setActivationPolicy(policy)
+    }
+    if show, let icon = appIcon {
+        app.applicationIconImage = icon
+    }
+}
 
 // Cmd-V & friends only work if an Edit menu supplies the standard key
 // equivalents — script apps have no main menu by default, which made paste
@@ -494,12 +520,12 @@ func promptForPrefs() {
     guard let p = currentPrefs else { return }
     let alert = NSAlert()
     alert.messageText = "Preferences"
-    alert.informativeText = "Changes apply immediately (the live session restarts)."
+    alert.informativeText = "Changes apply immediately."
     alert.addButton(withTitle: "Save")
     alert.addButton(withTitle: "Cancel")
 
     let rowH: CGFloat = 30
-    let rows: CGFloat = 7
+    let rows: CGFloat = 8
     let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: rows * rowH))
     func rowY(_ row: Int) -> CGFloat { (rows - CGFloat(row) - 1) * rowH + 4 }
     func addLabel(_ text: String, row: Int) {
@@ -585,6 +611,11 @@ func promptForPrefs() {
     maxSentHint.frame = NSRect(x: 238, y: rowY(6) + 2, width: 180, height: 18)
     accessory.addSubview(maxSentHint)
 
+    let dockIcon = NSButton(checkboxWithTitle: "Show Dock icon", target: nil, action: nil)
+    dockIcon.state = (p.dock_icon ?? true) ? .on : .off
+    dockIcon.frame = NSRect(x: 160, y: rowY(7), width: 250, height: 22)
+    accessory.addSubview(dockIcon)
+
     alert.accessoryView = accessory
     alert.window.initialFirstResponder = gapField
     NSApp.activate(ignoringOtherApps: true)
@@ -601,6 +632,7 @@ func promptForPrefs() {
             "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,
             "word_gap_ms": Int(gapField.stringValue) ?? p.word_gap_ms,
             "max_sentences": Int(maxSentField.stringValue) ?? (p.max_sentences ?? 3),
+            "dock_icon": dockIcon.state == .on,
         ] as [String: Any]])
     }
 }
@@ -675,6 +707,7 @@ DispatchQueue.global().async {
                 renderError(msg.message ?? "error")
             case "prefs":
                 currentPrefs = msg.prefs
+                applyDockIcon(msg.prefs?.dock_icon ?? true)
             default:
                 break
             }

@@ -23,6 +23,7 @@ type Prefs struct {
 	StreamDelay  string `json:"stream_delay"`
 	WordGapMS    int    `json:"word_gap_ms"`
 	MaxSentences int    `json:"max_sentences"`
+	DockIcon     bool   `json:"dock_icon"`
 }
 
 type storedConfig struct {
@@ -135,6 +136,7 @@ func prefsFromConfig(cfg Config) Prefs {
 		StreamDelay:  cfg.StreamDelay,
 		WordGapMS:    cfg.WordGapMS,
 		MaxSentences: cfg.MaxSentences,
+		DockIcon:     cfg.DockIcon,
 	}
 }
 
@@ -154,4 +156,5 @@ func applyPrefs(cfg *Config, p Prefs) {
 		cfg.WordGapMS = max(p.WordGapMS, 150)
 	}
 	cfg.MaxSentences = max(p.MaxSentences, 0) // 0 = no limit
+	cfg.DockIcon = p.DockIcon
 }

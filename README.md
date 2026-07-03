@@ -39,7 +39,7 @@ Requirements:
 
 ```sh
 make                      # builds bin/audiotap, bin/subtitle-window (Swift) and bin/sas (Go)
-./bin/sas --show-original
+./bin/sas
 ```
 
 On first run:
@@ -59,8 +59,9 @@ While running, a **captions icon in the menu bar** (and a gear in the window's
 top bar) has the settings:
 
 - *Preferences…* — target/source language, show-original, transcription-only,
-  latency, sentence gap, and max sentences per segment. Saved changes apply
-  immediately (the live session restarts) and persist in the config file.
+  latency, sentence gap, max sentences per segment, and Dock icon. Saved
+  changes apply immediately (session-level settings restart the live session)
+  and persist in the config file.
 - *Edit API Key…* — applies immediately; a broken key shows a red error in the
   window until it's fixed.
 - *Clear API Key & Quit* — deletes the key from the keychain (preferences
@@ -79,11 +80,14 @@ echoed to the terminal as a plain transcript.
 --target-lang en      language to translate into (default: en)
 --source-lang ""      optional source-language hint (ISO 639-1); auto-detect if empty
 --show-original       show the untranslated text above each subtitle
+                      (default: on; disable with --show-original=false)
 --no-translate        transcription only
 --stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
 --word-gap 1000       milliseconds without new transcribed words that ends a segment
 --max-sentences 3     force-cut a live segment into history after this many
                       sentences, even without a pause (0 = no limit)
+--dock-icon           show a Dock icon while running
+                      (default: on; disable with --dock-icon=false)
 ```
 
 All of these are also editable in the window's Preferences dialog, which
@@ -93,7 +97,7 @@ runs; an explicitly passed flag overrides the stored value for that run.
 Examples:
 
 ```sh
-./bin/sas --target-lang de --show-original   # German subtitles + original text
+./bin/sas --target-lang de                   # German subtitles + original text
 ./bin/sas --no-translate --source-lang ja    # Japanese transcript, no translation
 ```
 

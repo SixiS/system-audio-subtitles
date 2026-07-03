@@ -21,6 +21,7 @@ type Config struct {
 	WordGapMS    int
 	MaxSentences int
 	StreamDelay  string
+	DockIcon     bool
 	DebugEvents  bool
 }
 
@@ -32,11 +33,12 @@ func main() {
 	flag.StringVar(&cfg.Input, "input", "", "dev mode: read a 24 kHz mono s16 WAV file instead of live capture")
 	flag.StringVar(&cfg.Record, "record", "", "capture system audio to this WAV file and exit")
 	flag.IntVar(&cfg.Seconds, "seconds", 5, "duration for --record")
-	flag.BoolVar(&cfg.ShowOriginal, "show-original", false, "also show the untranslated text")
+	flag.BoolVar(&cfg.ShowOriginal, "show-original", true, "also show the untranslated text")
 	flag.BoolVar(&cfg.NoTranslate, "no-translate", false, "transcription only")
 	flag.IntVar(&cfg.WordGapMS, "word-gap", 1000, "milliseconds without new transcribed words that ends a segment")
 	flag.IntVar(&cfg.MaxSentences, "max-sentences", 3, "sentences in one live segment before it is force-cut into history (0 = no limit)")
 	flag.StringVar(&cfg.StreamDelay, "stream-delay", "low", "realtime delay/accuracy setting: minimal|low|medium|high|xhigh")
+	flag.BoolVar(&cfg.DockIcon, "dock-icon", true, "show a Dock icon while running")
 	flag.BoolVar(&cfg.DebugEvents, "debug-events", false, "log raw realtime API events to stderr")
 	flag.Parse()
 
@@ -63,6 +65,9 @@ func main() {
 		}
 		if !set["stream-delay"] && p.StreamDelay != "" {
 			cfg.StreamDelay = p.StreamDelay
+		}
+		if !set["dock-icon"] {
+			cfg.DockIcon = p.DockIcon
 		}
 		if !set["word-gap"] && p.WordGapMS > 0 {
 			cfg.WordGapMS = p.WordGapMS

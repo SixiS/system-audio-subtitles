@@ -27,7 +27,8 @@ echo "==> building universal binaries"
 for arch in arm64 x86_64; do
 	swiftc -O -target "$arch-apple-macos$MACOS_MIN" helper/audiotap.swift -o "$BUILD/audiotap.$arch" \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/Info.plist
-	swiftc -O -target "$arch-apple-macos$MACOS_MIN" helper/subtitlewindow.swift -o "$BUILD/subtitle-window.$arch"
+	swiftc -O -target "$arch-apple-macos$MACOS_MIN" helper/subtitlewindow.swift -o "$BUILD/subtitle-window.$arch" \
+		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/WindowInfo.plist
 done
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o "$BUILD/sas.arm64" .
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o "$BUILD/sas.x86_64" .

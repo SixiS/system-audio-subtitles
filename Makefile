@@ -12,9 +12,12 @@ $(HELPER): helper/audiotap.swift helper/Info.plist
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/Info.plist
 	codesign --force --sign - --identifier io.github.sixis.sas.audiotap $@
 
-$(WINDOW): helper/subtitlewindow.swift
+# The embedded plist names the process "System Audio Subtitles" in the Dock
+# and Cmd-Tab when the Dock-icon preference is on.
+$(WINDOW): helper/subtitlewindow.swift helper/WindowInfo.plist
 	@mkdir -p bin
-	swiftc -O helper/subtitlewindow.swift -o $@
+	swiftc -O helper/subtitlewindow.swift -o $@ \
+		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/WindowInfo.plist
 
 $(GO_BIN): go.mod $(wildcard *.go)
 	@mkdir -p bin

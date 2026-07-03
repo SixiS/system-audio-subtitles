@@ -292,6 +292,7 @@ func runStream(ctx context.Context, cfg Config) error {
 				}
 			case "set_prefs":
 				if ev.Prefs != nil {
+					before := cfg
 					applyPrefs(&cfg, *ev.Prefs)
 					display.setConfig(cfg)
 					display.SendPrefs(cfg) // echo back the clamped values
@@ -300,9 +301,15 @@ func runStream(ctx context.Context, cfg Config) error {
 					} else {
 						fmt.Fprintln(os.Stderr, "sas: preferences updated")
 					}
-					// Source language, latency, and word gap live in the
-					// realtime session — restart it to apply them.
-					if !streamEnded && !waitingForKey {
+					// Source language, latency, word gap, and max sentences
+					// live in the realtime session — restart it to apply
+					// them. Everything else (target language, show-original,
+					// Dock icon, …) takes effect without one.
+					sessionChanged := cfg.SourceLang != before.SourceLang ||
+						cfg.StreamDelay != before.StreamDelay ||
+						cfg.WordGapMS != before.WordGapMS ||
+						cfg.MaxSentences != before.MaxSentences
+					if sessionChanged && !streamEnded && !waitingForKey {
 						pendingRestart = true
 						sessionCancel()
 					}
