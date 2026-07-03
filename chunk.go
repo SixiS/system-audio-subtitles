@@ -8,13 +8,12 @@ import (
 )
 
 const (
-	frameSamples = 480 // 30 ms at 16 kHz
+	frameMS      = 30
+	frameSamples = sampleRate * frameMS / 1000
 	frameBytes   = frameSamples * bytesPerSample
 
-	prePadFrames     = 6   // 180 ms of audio kept from before speech onset
-	silenceCutFrames = 17  // ~510 ms of trailing silence ends a chunk
-	minSpeechFrames  = 10  // chunks with <300 ms of speech are dropped
-	maxChunkFrames   = 267 // ~8 s hard cut for long uninterrupted speech
+	prePadFrames    = 6  // 180 ms of audio kept from before speech onset
+	minSpeechFrames = 10 // chunks with <300 ms of speech are dropped
 )
 
 type Chunk struct {
@@ -33,11 +32,15 @@ func frameRMS(frame []byte) float64 {
 
 // chunker segments the PCM stream into speech chunks using energy-based VAD:
 // a chunk starts at the first frame above threshold (plus a little pre-pad),
-// and ends after ~500 ms of silence or at the ~8 s hard cut. All-silent
-// stretches never produce chunks, which keeps hallucination-prone empty audio
-// away from the transcriber. Closes out when the source ends.
-func chunker(ctx context.Context, src io.Reader, threshold float64, out chan<- Chunk) {
+// and ends after --silence-cut ms of silence or at the --max-chunk hard cut.
+// All-silent stretches never produce chunks, which keeps hallucination-prone
+// empty audio away from the transcriber. Closes out when the source ends.
+func chunker(ctx context.Context, src io.Reader, cfg Config, out chan<- Chunk) {
 	defer close(out)
+
+	threshold := cfg.VADThreshold
+	silenceCutFrames := cfg.SilenceCutMS / frameMS
+	maxChunkFrames := int(cfg.MaxChunkSec * 1000 / frameMS)
 
 	var (
 		pre          [][]byte

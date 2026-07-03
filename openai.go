@@ -74,11 +74,18 @@ func (c *Client) audioRequest(ctx context.Context, url string, fields map[string
 }
 
 // TranslateText translates one subtitle line with gpt-4o-mini. history holds
-// recent "source → translation" pairs for continuity.
-func (c *Client) TranslateText(ctx context.Context, text, targetLang string, history []string) (string, error) {
+// recent "source → translation" pairs for continuity. partial marks an
+// in-progress fragment that must not be completed or embellished.
+func (c *Client) TranslateText(ctx context.Context, text, targetLang string, history []string, partial bool) (string, error) {
 	system := fmt.Sprintf(
 		"You translate live subtitles into %q. Reply with only the translation of the user's message — no quotes, no commentary. "+
 			"If the message is already in %q, reply with the message unchanged.", targetLang, targetLang)
+	if partial {
+		system = fmt.Sprintf(
+			"You translate live, in-progress speech into %q. The user's message is an incomplete fragment still being spoken: "+
+				"translate exactly what is there, never complete the sentence or invent words. Reply with only the translation — "+
+				"no quotes, no commentary. If it is already in %q, reply with it unchanged.", targetLang, targetLang)
+	}
 	if len(history) > 0 {
 		system += "\nRecent subtitles, for context:\n" + strings.Join(history, "\n")
 	}

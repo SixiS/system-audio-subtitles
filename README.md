@@ -24,9 +24,10 @@ chunks). Cost is roughly $0.20 per hour of audio at the defaults.
 ## Build & run
 
 ```sh
-make                      # builds bin/audiotap (Swift) and bin/sas (Go)
+make                      # builds bin/audiotap, bin/subtitle-window (Swift) and bin/sas (Go)
 export OPENAI_API_KEY=sk-...
-./bin/sas                 # English subtitles for whatever is playing
+./bin/sas --stream --window --show-original   # live subtitles in a floating window
+./bin/sas                                     # chunked mode, terminal output
 ```
 
 On first run macOS asks to allow **audiotap** to record system audio — click
@@ -40,6 +41,11 @@ Audio Recording.
 ```sh
 ./bin/sas [flags]
 
+--stream              use the OpenAI Realtime API: word-by-word live captions,
+                      progressive translations that refine as the sentence grows
+--window              floating native subtitle overlay with a close button
+                      (requires --stream); drag to move
+--stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
 --target-lang en      language to translate into (default: en)
 --source-lang ""      optional source-language hint (ISO 639-1); auto-detect if empty
 --model NAME          transcription model (default: gpt-4o-mini-transcribe;
@@ -50,7 +56,26 @@ Audio Recording.
 --show-original       print the untranslated text dimmed above each subtitle
 --no-translate        transcription only
 --vad-threshold 0.01  RMS level above which a frame counts as speech
+--max-chunk 8         hard cut for continuous speech, in seconds
+--silence-cut 510     trailing silence that ends a chunk, in milliseconds
+--timing              log per-chunk audio length and API latency to stderr
 ```
+
+**Streaming vs chunked.** `--stream` is the low-latency mode: audio goes to the
+Realtime API (`gpt-realtime-whisper`) over a WebSocket, source-language text
+arrives word by word *while the sentence is still being spoken*, and each
+segment is translated progressively — a provisional translation every couple of
+new words, then one authoritative translation of the full sentence that
+replaces it when the segment completes. Segments end at natural pauses
+(`--silence-cut`).
+
+Chunked mode (the default, no flag) buffers speech-sized chunks and POSTs them;
+its subtitle lag ≈ chunk length + API round-trip, and the round-trip is
+~1–2.5 s **regardless of chunk size**, so smaller `--max-chunk` values lower
+latency — but transcription quality drops off fast below ~8 s (at 2 s both
+models hallucinate freely; language auto-detection breaks even with a
+`--source-lang` hint). Treat `--max-chunk 4` as the floor; if latency matters,
+use `--stream` instead.
 
 Examples:
 
@@ -89,8 +114,16 @@ printed on exit.
   - *renderer* — reorders results by sequence number (workers finish out of
     order) and prints one line per chunk.
 
-No third-party dependencies: the Go side is stdlib only, the helper is a single
-Swift file compiled with `swiftc`.
+In `--stream` mode the chunker/transcriber stages are replaced by a Realtime
+API WebSocket client (`realtime.go`): our energy VAD decides when to *commit* a
+segment (the model streams deltas continuously; commits just mark segment
+ends — they arrive in strict audio order and define subtitle ordering), and a
+translation manager (`streamrun.go`) races provisional fragment translations
+against the final full-sentence one, guarded by per-segment versioning so a
+stale result can never overwrite a newer one.
+
+Dependencies: the Go side is stdlib plus `coder/websocket` (needed for
+`--stream`); the helpers are single Swift files compiled with `swiftc`.
 
 ### The permission dance
 
@@ -120,21 +153,25 @@ plays, then inspect/convert the raw PCM (16 kHz mono s16le).
 Layout:
 
 ```
-helper/audiotap.swift   system-audio capture (Swift, Core Audio process tap)
-main.go                 flags and wiring
-capture.go              helper spawn / WAV input / --record mode
-chunk.go                energy-based VAD chunker
-openai.go               OpenAI API client (transcribe, translate, retries)
-pipeline.go             worker pool, ordered renderer, cost summary
-wav.go                  WAV encode/decode helpers
-PLAN.md                 design decisions, milestones, roadmap
+helper/audiotap.swift        system-audio capture (Swift, Core Audio process tap)
+helper/subtitlewindow.swift  floating subtitle overlay (Swift, AppKit)
+main.go                      flags and wiring
+capture.go                   helper spawn / WAV input / --record mode
+chunk.go                     energy-based VAD chunker
+openai.go                    REST API client (transcribe, translate, retries)
+realtime.go                  Realtime API WebSocket client (--stream)
+streamrun.go                 progressive-translation manager (--stream)
+pipeline.go                  chunked-mode worker pool and renderer
+display.go                   terminal + native-window renderers
+wav.go                       WAV encode/decode helpers
+PLAN.md                      design decisions, milestones, roadmap
 ```
 
 ## Contributing
 
 Issues and PRs welcome. A few ground rules:
 
-- Keep the Go side dependency-free (stdlib only) unless there's a strong reason.
+- Keep Go dependencies minimal (currently just `coder/websocket`); prefer stdlib.
 - `gofmt` and `go vet ./...` must pass; test with the dev modes above before
   opening a PR (a short `--input` WAV in a foreign language is the quickest
   end-to-end check).
@@ -142,8 +179,8 @@ Issues and PRs welcome. A few ground rules:
   on stderr" — alternative capture backends (e.g. ScreenCaptureKit) are welcome
   as long as they honor it.
 - Roadmap ideas live in [PLAN.md](PLAN.md) — currently: helper auto-restart,
-  OpenAI Realtime API streaming for sub-second latency, SRT export, and
-  following default-output-device changes mid-run.
+  SRT export, realtime-session reconnect, and following default-output-device
+  changes mid-run.
 
 ## License
 

@@ -3,7 +3,7 @@ import CoreAudio
 import Foundation
 
 // audiotap: capture macOS system audio with a Core Audio process tap
-// (macOS 14.4+) and stream 16 kHz mono s16le PCM to stdout.
+// (macOS 14.4+) and stream 24 kHz mono s16le PCM to stdout.
 // stderr carries diagnostics only; stdout is exclusively PCM bytes.
 //
 // Exit codes:
@@ -11,7 +11,7 @@ import Foundation
 //   2  — tap creation failed (usually: System Audio Recording permission denied)
 //   64 — usage error (stdout is a terminal)
 
-let outputSampleRate = 16000.0
+let outputSampleRate = 24000.0 // realtime API native rate; REST endpoints accept it too
 let outputChannels: AVAudioChannelCount = 1
 
 func note(_ message: String) {

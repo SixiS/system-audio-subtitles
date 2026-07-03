@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	sampleRate     = 16000
+	sampleRate     = 24000
 	channels       = 1
 	bytesPerSample = 2
 )

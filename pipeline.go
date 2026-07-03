@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 )
 
 const transcribeWorkers = 3
@@ -24,7 +25,7 @@ func run(ctx context.Context, cfg Config, key string) error {
 	defer cleanup()
 
 	chunks := make(chan Chunk, 8)
-	go chunker(ctx, src, cfg.VADThreshold, chunks)
+	go chunker(ctx, src, cfg, chunks)
 
 	if cfg.ChunkDebug {
 		for c := range chunks {
@@ -58,16 +59,21 @@ func run(ctx context.Context, cfg Config, key string) error {
 				recent := append([]string(nil), history...)
 				mu.Unlock()
 
+				start := time.Now()
 				if cfg.Fast {
 					res.Translated, res.Err = client.TranslateAudio(ctx, chunk.PCM, prompt)
 					res.Original = res.Translated
 				} else {
 					res.Original, res.Err = client.Transcribe(ctx, chunk.PCM, cfg.Model, cfg.SourceLang, prompt)
 					if res.Err == nil && res.Original != "" && !cfg.NoTranslate {
-						res.Translated, res.Err = client.TranslateText(ctx, res.Original, cfg.TargetLang, recent)
+						res.Translated, res.Err = client.TranslateText(ctx, res.Original, cfg.TargetLang, recent, false)
 					} else {
 						res.Translated = res.Original
 					}
+				}
+				if cfg.Timing {
+					fmt.Fprintf(os.Stderr, "sas: chunk %d: %.1fs audio, api %.2fs\n",
+						chunk.Seq, float64(len(chunk.PCM))/(sampleRate*bytesPerSample), time.Since(start).Seconds())
 				}
 
 				mu.Lock()
