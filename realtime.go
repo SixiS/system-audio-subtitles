@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -20,20 +18,20 @@ const (
 	realtimeURL   = "wss://api.openai.com/v1/realtime?intent=transcription"
 	realtimeModel = "gpt-realtime-whisper"
 
-	frameMS      = 30
-	frameSamples = sampleRate * frameMS / 1000
-	frameBytes   = frameSamples * bytesPerSample
+	frameMS    = 30
+	frameBytes = sampleRate * frameMS / 1000 * bytesPerSample
 
-	minSpeechFrames = 10 // segments with <300 ms of speech aren't committed
+	// The API rejects commits of very short buffers (<100 ms of audio).
+	minCommitBytes = sampleRate * bytesPerSample / 5 // 200 ms
 )
 
-func frameRMS(frame []byte) float64 {
-	var sum float64
-	for i := 0; i+1 < len(frame); i += bytesPerSample {
-		s := float64(int16(binary.LittleEndian.Uint16(frame[i:]))) / 32768
-		sum += s * s
-	}
-	return math.Sqrt(sum / float64(len(frame)/bytesPerSample))
+// wordActivity shares transcription-delta timing between the event reader
+// (which sees deltas arrive) and the audio writer (which decides commits).
+// hasWords is only ever true when lastDeltaNano is set: the reader stores the
+// timestamp first.
+type wordActivity struct {
+	hasWords      atomic.Bool  // the open (uncommitted) segment has transcribed words
+	lastDeltaNano atomic.Int64 // arrival time of its most recent delta
 }
 
 var streamedAudioBytes atomic.Int64
@@ -48,8 +46,10 @@ type SegmentUpdate struct {
 
 // streamTranscribe pipes PCM from src to the Realtime transcription API and
 // emits SegmentUpdates as delta/completed events arrive. Segmentation is
-// manual: gpt-realtime-whisper streams deltas continuously, and our energy VAD
-// decides when to commit (ending a segment) after --silence-cut of silence.
+// manual: gpt-realtime-whisper streams deltas continuously, and a segment is
+// committed once its words stop — no new delta for --word-gap ms. Cutting on
+// transcription activity rather than acoustic silence means background music
+// can't hold a segment open; only speech does.
 func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader, updates chan<- SegmentUpdate) error {
 	defer close(updates)
 
@@ -86,8 +86,9 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 	}
 
 	var commits atomic.Int32
+	var act wordActivity
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- streamAudio(ctx, cfg, conn, src, &commits) }()
+	go func() { writerDone <- streamAudio(ctx, cfg, conn, src, &commits, &act) }()
 
 	type readFrame struct {
 		data []byte
@@ -105,6 +106,7 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 	}()
 
 	texts := map[string]string{}
+	closed := map[string]bool{} // committed items whose transcription is still finishing
 	completed := int32(0)
 	writerEnded := false
 	var drainTimer <-chan time.Time
@@ -157,12 +159,21 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 				// Commits arrive in strict audio order (deltas don't — the
 				// server transcribes segments in parallel), so this is where
 				// segment order is established downstream.
+				closed[ev.ItemID] = true
+				act.hasWords.Store(false) // the open segment starts fresh
 				send(SegmentUpdate{ItemID: ev.ItemID})
 			case "conversation.item.input_audio_transcription.delta":
 				texts[ev.ItemID] += ev.Delta
+				if !closed[ev.ItemID] {
+					// Words for the open segment; late deltas for committed
+					// segments mustn't count or they'd trigger spurious commits.
+					act.lastDeltaNano.Store(time.Now().UnixNano())
+					act.hasWords.Store(true)
+				}
 				send(SegmentUpdate{ItemID: ev.ItemID, Text: texts[ev.ItemID]})
 			case "conversation.item.input_audio_transcription.completed":
 				delete(texts, ev.ItemID)
+				delete(closed, ev.ItemID)
 				completed++
 				send(SegmentUpdate{ItemID: ev.ItemID, Text: ev.Transcript, Final: true})
 				if writerEnded && completed >= commits.Load() {
@@ -179,14 +190,16 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 	}
 }
 
-// streamAudio appends PCM to the input buffer in ~120 ms batches and commits
-// a segment once the energy VAD sees --silence-cut of trailing silence (only
-// if the segment actually contained speech).
-func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.Reader, commits *atomic.Int32) error {
-	silenceCutFrames := cfg.SilenceCutMS / frameMS
+// streamAudio appends PCM to the input buffer in ~120 ms batches and commits a
+// segment once the open segment has words but no new delta has arrived for
+// --word-gap ms. Wordless audio (music, silence) never commits on its own — it
+// just accumulates into whatever segment the next speech ends up in.
+func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.Reader, commits *atomic.Int32, act *wordActivity) error {
+	wordGap := time.Duration(cfg.WordGapMS) * time.Millisecond
 	frame := make([]byte, frameBytes)
 	batch := make([]byte, 0, frameBytes*4)
-	var silenceRun, speechFrames int
+	pending := 0 // audio bytes sent since the last commit
+	var lastCommit time.Time
 
 	flush := func() error {
 		if len(batch) == 0 {
@@ -197,34 +210,32 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 			"audio": base64.StdEncoding.EncodeToString(batch),
 		}
 		streamedAudioBytes.Add(int64(len(batch)))
+		pending += len(batch)
 		batch = batch[:0]
 		return writeJSON(ctx, conn, ev)
 	}
 	commit := func() error {
-		if speechFrames < minSpeechFrames {
-			return nil // nothing worth transcribing since the last commit
-		}
 		if err := flush(); err != nil {
 			return err
 		}
-		speechFrames = 0
+		if pending < minCommitBytes {
+			return nil
+		}
+		pending = 0
+		lastCommit = time.Now()
 		commits.Add(1)
 		return writeJSON(ctx, conn, map[string]any{"type": "input_audio_buffer.commit"})
 	}
 
 	for ctx.Err() == nil {
 		if _, err := io.ReadFull(src, frame); err != nil {
-			flush()
+			// Input ended. Commit whatever is buffered unconditionally: with
+			// --input the whole file may upload before any delta arrives, so
+			// hasWords can't be trusted here.
 			commit()
-			return nil // input ended
+			return nil
 		}
 		batch = append(batch, frame...)
-		if frameRMS(frame) >= cfg.VADThreshold {
-			speechFrames++
-			silenceRun = 0
-		} else {
-			silenceRun++
-		}
 		if len(batch) >= frameBytes*4 {
 			if err := flush(); err != nil {
 				if ctx.Err() != nil {
@@ -233,7 +244,11 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 				return err
 			}
 		}
-		if silenceRun == silenceCutFrames {
+		// The lastCommit guard covers the gap before the server's committed
+		// event resets hasWords — without it we'd re-commit immediately.
+		if act.hasWords.Load() &&
+			time.Since(time.Unix(0, act.lastDeltaNano.Load())) >= wordGap &&
+			time.Since(lastCommit) >= wordGap {
 			if err := commit(); err != nil {
 				if ctx.Err() != nil {
 					return nil

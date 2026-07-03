@@ -18,8 +18,7 @@ type Config struct {
 	Seconds      int
 	ShowOriginal bool
 	NoTranslate  bool
-	VADThreshold float64
-	SilenceCutMS int
+	WordGapMS    int
 	StreamDelay  string
 	DebugEvents  bool
 }
@@ -34,14 +33,13 @@ func main() {
 	flag.IntVar(&cfg.Seconds, "seconds", 5, "duration for --record")
 	flag.BoolVar(&cfg.ShowOriginal, "show-original", false, "also show the untranslated text")
 	flag.BoolVar(&cfg.NoTranslate, "no-translate", false, "transcription only")
-	flag.Float64Var(&cfg.VADThreshold, "vad-threshold", 0.01, "RMS level above which a frame counts as speech")
-	flag.IntVar(&cfg.SilenceCutMS, "silence-cut", 510, "trailing silence that ends a segment, in milliseconds")
+	flag.IntVar(&cfg.WordGapMS, "word-gap", 1000, "milliseconds without new transcribed words that ends a segment")
 	flag.StringVar(&cfg.StreamDelay, "stream-delay", "low", "realtime delay/accuracy setting: minimal|low|medium|high|xhigh")
 	flag.BoolVar(&cfg.DebugEvents, "debug-events", false, "log raw realtime API events to stderr")
 	flag.Parse()
 
-	if cfg.SilenceCutMS < 90 {
-		cfg.SilenceCutMS = 90
+	if cfg.WordGapMS < 150 {
+		cfg.WordGapMS = 150 // below this, normal gaps between delta batches cause spurious cuts
 	}
 
 	if cfg.Record != "" {

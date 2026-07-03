@@ -44,8 +44,7 @@ echoed to the terminal as a plain transcript.
 --show-original       show the untranslated text above each subtitle
 --no-translate        transcription only
 --stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
---vad-threshold 0.01  RMS level above which a frame counts as speech
---silence-cut 510     trailing silence that ends a segment, in milliseconds
+--word-gap 1000       milliseconds without new transcribed words that ends a segment
 ```
 
 Examples:
@@ -62,10 +61,10 @@ API, plus `gpt-4o-mini` tokens for translation.
 ## How it works
 
 ```
-┌──────────────┐   ┌───────────────────────┐   ┌────────────┐   ┌─────────────────┐
-│ audiotap     │──▶│ Realtime API (ws)     │──▶│ translator │──▶│ subtitle-window │
-│ (Swift, PCM) │   │ deltas + VAD commits  │   │ (OpenAI)   │   │ (Swift, AppKit) │
-└──────────────┘   └───────────────────────┘   └────────────┘   └─────────────────┘
+┌──────────────┐   ┌────────────────────────┐   ┌────────────┐   ┌─────────────────┐
+│ audiotap     │──▶│ Realtime API (ws)      │──▶│ translator │──▶│ subtitle-window │
+│ (Swift, PCM) │   │ deltas, word-gap cuts  │   │ (OpenAI)   │   │ (Swift, AppKit) │
+└──────────────┘   └────────────────────────┘   └────────────┘   └─────────────────┘
 ```
 
 - **`helper/audiotap.swift`** — system-audio capture. Creates a global Core
@@ -77,9 +76,12 @@ API, plus `gpt-4o-mini` tokens for translation.
 - **The Go pipeline** (`bin/sas`) spawns both helpers and connects them:
   - *realtime client* (`realtime.go`) — streams PCM to the Realtime API
     (`gpt-realtime-whisper`) over a WebSocket. The model streams source-language
-    deltas continuously; an energy VAD decides when to *commit* a segment after
-    `--silence-cut` of silence. Commits arrive in strict audio order and define
-    subtitle ordering (delta arrival order across segments does not).
+    deltas continuously; a segment is *committed* once it has words but no new
+    delta has arrived for `--word-gap`. Cutting on transcription activity
+    rather than acoustic silence means background music can't hold a segment
+    open — only speech does — and wordless audio never commits at all. Commits
+    arrive in strict audio order and define subtitle ordering (delta arrival
+    order across segments does not).
   - *translation manager* (`streamrun.go`) — races provisional fragment
     translations (every couple of new words, via `gpt-4o-mini`) against the
     authoritative full-sentence translation requested when the segment
@@ -122,7 +124,7 @@ helper/audiotap.swift        system-audio capture (Swift, Core Audio process tap
 helper/subtitlewindow.swift  floating subtitle overlay (Swift, AppKit)
 main.go                      flags and wiring
 capture.go                   helper spawn / WAV input / --record mode
-realtime.go                  Realtime API WebSocket client + energy VAD
+realtime.go                  Realtime API WebSocket client + segmentation
 streamrun.go                 progressive-translation manager
 openai.go                    REST API client (translation, retries)
 display.go                   subtitle-window driver
