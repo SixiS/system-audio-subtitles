@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// Settings live in a user-only config file so the app works without flags or
-// OPENAI_API_KEY in the environment after the first run. Explicit CLI flags
-// still override stored preferences for that run.
+// Preferences live in a user-only config file so the app works without flags
+// after the first run; explicit CLI flags still override stored preferences
+// for that run. The API key lives in the login keychain (keychain.go) — the
+// config file only ever sees it transiently, when migrating a key stored
+// there by older versions.
 
 // Prefs mirrors the tunable subset of Config that the window's Preferences
 // dialog edits. The JSON shape is shared with the window app.
@@ -23,7 +26,9 @@ type Prefs struct {
 }
 
 type storedConfig struct {
-	OpenAIAPIKey string `json:"openai_api_key"`
+	// Legacy field: keys are stored in the keychain now. Kept so a key
+	// written by an older version is found and migrated on load.
+	OpenAIAPIKey string `json:"openai_api_key,omitempty"`
 	Prefs        *Prefs `json:"prefs,omitempty"`
 }
 
@@ -61,19 +66,56 @@ func writeConfig(c storedConfig) error {
 	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
-func loadKey() string { return loadConfig().OpenAIAPIKey }
+func loadKey() string {
+	key, err := keychainLoad()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sas: reading API key from keychain: %v\n", err)
+		return ""
+	}
+	if key != "" {
+		return key
+	}
+	// Older versions stored the key in the config file — migrate it into the
+	// keychain and scrub the plaintext copy.
+	c := loadConfig()
+	if c.OpenAIAPIKey == "" {
+		return ""
+	}
+	if err := keychainSave(c.OpenAIAPIKey); err != nil {
+		fmt.Fprintf(os.Stderr, "sas: migrating API key to keychain: %v\n", err)
+		return c.OpenAIAPIKey // keep working off the file copy
+	}
+	key = c.OpenAIAPIKey
+	c.OpenAIAPIKey = ""
+	if err := writeConfig(c); err != nil {
+		fmt.Fprintf(os.Stderr, "sas: scrubbing migrated API key from config file: %v\n", err)
+	} else {
+		fmt.Fprintln(os.Stderr, "sas: API key moved from config file to the login keychain")
+	}
+	return key
+}
 
 func saveKey(key string) error {
-	c := loadConfig()
-	c.OpenAIAPIKey = key
-	return writeConfig(c)
+	if err := keychainSave(key); err != nil {
+		return err
+	}
+	if c := loadConfig(); c.OpenAIAPIKey != "" { // scrub any legacy file copy
+		c.OpenAIAPIKey = ""
+		return writeConfig(c)
+	}
+	return nil
 }
 
 // clearKey removes the stored key but keeps preferences.
 func clearKey() error {
-	c := loadConfig()
-	c.OpenAIAPIKey = ""
-	return writeConfig(c)
+	err := keychainDelete()
+	if c := loadConfig(); c.OpenAIAPIKey != "" { // legacy file copy goes too
+		c.OpenAIAPIKey = ""
+		if werr := writeConfig(c); werr != nil && err == nil {
+			err = werr
+		}
+	}
+	return err
 }
 
 func loadPrefs() *Prefs { return loadConfig().Prefs }

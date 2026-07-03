@@ -432,7 +432,7 @@ func promptForKey(firstBoot: Bool) {
     let alert = NSAlert()
     alert.messageText = firstBoot ? "OpenAI API Key" : "Edit OpenAI API Key"
     alert.informativeText = firstBoot
-        ? "Transcription and translation use the OpenAI API. Paste an API key to get started; it is stored locally for future runs."
+        ? "Transcription and translation use the OpenAI API. Paste an API key to get started; it is stored in your login keychain for future runs."
         : "The new key replaces the stored one."
     // A wrapping, monospaced field: API keys are ~160 characters, and a
     // single-line field scrolls to show only the tail after a paste — which
