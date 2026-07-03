@@ -12,7 +12,23 @@ is still being spoken, then an authoritative one replaces it when the sentence
 completes. Finished lines scroll into a timestamped history above the live
 area.
 
-## Requirements
+## Install
+
+Download the latest `SystemAudioSubtitles-x.y.z.dmg` from
+[Releases](https://github.com/SixiS/system-audio-subtitles/releases), drag
+**System Audio Subtitles** into Applications, and open it. The app is signed
+and notarized — no Gatekeeper warnings. You'll need macOS 14.4 or newer and an
+OpenAI API key. On first launch:
+
+1. The window asks for your **OpenAI API key** (stored in your login keychain).
+2. macOS asks to allow **System Audio Recording** — click Allow.
+
+That's it — play something and subtitles appear. Settings live behind the
+menu-bar captions icon and the gear in the window's top bar.
+
+## Building from source
+
+Requirements:
 
 - macOS 14.4 or newer (uses Core Audio process taps)
 - Xcode Command Line Tools (`xcode-select --install`) — provides `swiftc`
@@ -159,8 +175,15 @@ translate.go                 translation REST client (gpt-4o-mini, retries)
 display.go                   subtitle-window driver
 wav.go                       WAV encode/decode helpers
 assets/                      app icon (PNG + .icns) and the script that draws it
+packaging/                   app-bundle Info.plist and entitlements
+scripts/release.sh           builds the universal .app, signs, notarizes, makes the DMG
 PLAN.md                      design decisions, milestones, roadmap
+RELEASING.md                 how releases are cut (Apple Developer setup, make release)
 ```
+
+`make app` assembles an ad-hoc-signed `System Audio Subtitles.app` in `dist/`
+for local testing; `make release VERSION=vX.Y.Z` produces the signed,
+notarized DMG (see [RELEASING.md](RELEASING.md)).
 
 ## Contributing
 
@@ -179,5 +202,4 @@ Issues and PRs welcome. A few ground rules:
 
 ## License
 
-No license file yet — if you're the repo owner, pick one before accepting
-contributions (MIT is the path of least resistance).
+[MIT](LICENSE)

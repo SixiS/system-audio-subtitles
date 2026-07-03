@@ -10,7 +10,7 @@ $(HELPER): helper/audiotap.swift helper/Info.plist
 	@mkdir -p bin
 	swiftc -O helper/audiotap.swift -o $@ \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker helper/Info.plist
-	codesign --force --sign - --identifier local.audiotap $@
+	codesign --force --sign - --identifier io.github.sixis.sas.audiotap $@
 
 $(WINDOW): helper/subtitlewindow.swift
 	@mkdir -p bin
@@ -20,7 +20,17 @@ $(GO_BIN): go.mod $(wildcard *.go)
 	@mkdir -p bin
 	go build -o $@ .
 
-clean:
-	rm -rf bin
+# Assemble a local, ad-hoc-signed app bundle in dist/ for testing.
+app:
+	scripts/release.sh
 
-.PHONY: all clean
+# Signed + notarized DMG; needs CODESIGN_IDENTITY and NOTARY_PROFILE set
+# (one-time setup in RELEASING.md).
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=v0.1.0"; exit 1; }
+	scripts/release.sh $(VERSION)
+
+clean:
+	rm -rf bin dist
+
+.PHONY: all app release clean

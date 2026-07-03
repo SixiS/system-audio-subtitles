@@ -28,7 +28,7 @@ func main() {
 	var cfg Config
 	flag.StringVar(&cfg.TargetLang, "target-lang", "en", "language to translate subtitles into")
 	flag.StringVar(&cfg.SourceLang, "source-lang", "", "optional source language hint for transcription (ISO 639-1)")
-	flag.StringVar(&cfg.Helper, "helper", "bin/audiotap", "path to the audiotap capture helper")
+	flag.StringVar(&cfg.Helper, "helper", "", "path to the audiotap capture helper (default: next to the sas binary, else bin/audiotap)")
 	flag.StringVar(&cfg.Input, "input", "", "dev mode: read a 24 kHz mono s16 WAV file instead of live capture")
 	flag.StringVar(&cfg.Record, "record", "", "capture system audio to this WAV file and exit")
 	flag.IntVar(&cfg.Seconds, "seconds", 5, "duration for --record")
@@ -39,6 +39,10 @@ func main() {
 	flag.StringVar(&cfg.StreamDelay, "stream-delay", "low", "realtime delay/accuracy setting: minimal|low|medium|high|xhigh")
 	flag.BoolVar(&cfg.DebugEvents, "debug-events", false, "log raw realtime API events to stderr")
 	flag.Parse()
+
+	if cfg.Helper == "" {
+		cfg.Helper = defaultHelper()
+	}
 
 	// Stored preferences (edited via the window's Preferences dialog) fill in
 	// everything the user didn't set explicitly on the command line.

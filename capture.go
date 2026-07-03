@@ -6,9 +6,25 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 )
+
+// defaultHelper locates audiotap next to the sas executable — true in both
+// the dev layout (bin/) and the app bundle (Contents/MacOS/), and immune to
+// the working directory (a Finder-launched app runs with cwd=/). Falls back
+// to the repo-relative path for `go run .`. The subtitle-window helper is
+// resolved from the same directory (see newDisplay).
+func defaultHelper() string {
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "audiotap")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "bin/audiotap"
+}
 
 // openPCMSource returns a stream of 24 kHz mono s16le PCM: either the audiotap
 // helper's stdout (live capture) or the data chunk of a WAV file (--input).

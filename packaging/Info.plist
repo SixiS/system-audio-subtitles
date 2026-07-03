@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.sixis.system-audio-subtitles</string>
+	<key>CFBundleName</key>
+	<string>System Audio Subtitles</string>
+	<key>CFBundleExecutable</key>
+	<string>sas</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.4</string>
+	<!-- Agent app: the pipeline binary never checks in with the Dock; the
+	     subtitle window and menu-bar item come from the spawned helper. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>System Audio Subtitles captures the audio your Mac is playing to generate live subtitles.</string>
+</dict>
+</plist>

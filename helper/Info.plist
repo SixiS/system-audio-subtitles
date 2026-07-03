@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>local.audiotap</string>
+	<string>io.github.sixis.sas.audiotap</string>
 	<key>CFBundleName</key>
 	<string>audiotap</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>audiotap captures system audio to generate live terminal subtitles.</string>
+	<string>System Audio Subtitles captures the audio your Mac is playing to generate live subtitles.</string>
 </dict>
 </plist>
