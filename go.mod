@@ -1,4 +1,4 @@
-module system_audio_subtitles
+module github.com/SixiS/system-audio-subtitles
 
 go 1.26.4
 

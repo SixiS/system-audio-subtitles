@@ -109,7 +109,7 @@ API, plus `gpt-4o-mini` tokens for translation.
     open — only speech does — and wordless audio never commits at all. Commits
     arrive in strict audio order and define subtitle ordering (delta arrival
     order across segments does not).
-  - *translation manager* (`streamrun.go`) — races provisional fragment
+  - *translation manager* (`pipeline.go`) — races provisional fragment
     translations (every couple of new words, via `gpt-4o-mini`) against the
     authoritative full-sentence translation requested when the segment
     completes, guarded by per-segment versioning so a stale result can never
@@ -154,8 +154,8 @@ config.go                    stored preferences (~/Library/Application Support/s
 keychain.go                  API key storage in the login keychain (via /usr/bin/security)
 capture.go                   helper spawn / WAV input / --record mode
 realtime.go                  Realtime API WebSocket client + segmentation
-streamrun.go                 progressive-translation manager
-openai.go                    REST API client (translation, retries)
+pipeline.go                  orchestrator: progressive-translation event loop
+translate.go                 translation REST client (gpt-4o-mini, retries)
 display.go                   subtitle-window driver
 wav.go                       WAV encode/decode helpers
 assets/                      app icon (PNG + .icns) and the script that draws it
