@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// openPCMSource returns a stream of 16 kHz mono s16le PCM: either the audiotap
+// openPCMSource returns a stream of 24 kHz mono s16le PCM: either the audiotap
 // helper's stdout (live capture) or the data chunk of a WAV file (--input).
 func openPCMSource(ctx context.Context, cfg Config) (io.Reader, func(), error) {
 	if cfg.Input != "" {

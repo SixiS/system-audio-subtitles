@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -17,7 +19,22 @@ import (
 const (
 	realtimeURL   = "wss://api.openai.com/v1/realtime?intent=transcription"
 	realtimeModel = "gpt-realtime-whisper"
+
+	frameMS      = 30
+	frameSamples = sampleRate * frameMS / 1000
+	frameBytes   = frameSamples * bytesPerSample
+
+	minSpeechFrames = 10 // segments with <300 ms of speech aren't committed
 )
+
+func frameRMS(frame []byte) float64 {
+	var sum float64
+	for i := 0; i+1 < len(frame); i += bytesPerSample {
+		s := float64(int16(binary.LittleEndian.Uint16(frame[i:]))) / 32768
+		sum += s * s
+	}
+	return math.Sqrt(sum / float64(len(frame)/bytesPerSample))
+}
 
 var streamedAudioBytes atomic.Int64
 

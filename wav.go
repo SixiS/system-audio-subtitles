@@ -15,7 +15,7 @@ const (
 	bytesPerSample = 2
 )
 
-// wavEncode wraps raw 16 kHz mono s16le PCM in a WAV header.
+// wavEncode wraps raw 24 kHz mono s16le PCM in a WAV header.
 func wavEncode(pcm []byte) []byte {
 	var b bytes.Buffer
 	b.Grow(44 + len(pcm))
@@ -40,7 +40,7 @@ func writeWAV(path string, pcm []byte) error {
 	return os.WriteFile(path, wavEncode(pcm), 0o644)
 }
 
-// wavDataReader validates that r is a 16 kHz mono 16-bit PCM WAV and returns
+// wavDataReader validates that r is a 24 kHz mono 16-bit PCM WAV and returns
 // a reader over its data chunk.
 func wavDataReader(r io.Reader) (io.Reader, error) {
 	var riff [12]byte

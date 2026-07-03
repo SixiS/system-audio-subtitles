@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -21,56 +20,6 @@ type Client struct {
 
 func newClient(key string) *Client {
 	return &Client{key: key, http: &http.Client{Timeout: 90 * time.Second}}
-}
-
-// Transcribe sends one PCM chunk to /audio/transcriptions. prompt carries the
-// tail of the previous transcript so sentences split across chunks stay
-// coherent; language is an optional ISO 639-1 hint.
-func (c *Client) Transcribe(ctx context.Context, pcm []byte, model, language, prompt string) (string, error) {
-	fields := map[string]string{"model": model, "response_format": "json"}
-	if language != "" {
-		fields["language"] = language
-	}
-	if prompt != "" {
-		fields["prompt"] = prompt
-	}
-	return c.audioRequest(ctx, apiBase+"/audio/transcriptions", fields, pcm)
-}
-
-// TranslateAudio is the --fast path: whisper-1's translations endpoint
-// transcribes and translates to English in one call.
-func (c *Client) TranslateAudio(ctx context.Context, pcm []byte, prompt string) (string, error) {
-	fields := map[string]string{"model": "whisper-1", "response_format": "json"}
-	if prompt != "" {
-		fields["prompt"] = prompt
-	}
-	return c.audioRequest(ctx, apiBase+"/audio/translations", fields, pcm)
-}
-
-func (c *Client) audioRequest(ctx context.Context, url string, fields map[string]string, pcm []byte) (string, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	for k, v := range fields {
-		w.WriteField(k, v)
-	}
-	fw, err := w.CreateFormFile("file", "chunk.wav")
-	if err != nil {
-		return "", err
-	}
-	fw.Write(wavEncode(pcm))
-	w.Close()
-
-	data, err := c.doWithRetry(ctx, url, w.FormDataContentType(), buf.Bytes())
-	if err != nil {
-		return "", err
-	}
-	var out struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return "", fmt.Errorf("parsing response: %w", err)
-	}
-	return strings.TrimSpace(out.Text), nil
 }
 
 // TranslateText translates one subtitle line with gpt-4o-mini. history holds
