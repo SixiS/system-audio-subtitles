@@ -35,7 +35,7 @@ type segState struct {
 // the window to prompt — a text field, plus a "use $OPENAI_API_KEY" button when
 // the environment has one — and stores the answer. Returns "" if the user
 // dismissed the prompt (quit) instead of providing a key.
-func ensureKey(ctx context.Context, display *display) (string, error) {
+func ensureKey(ctx context.Context, display *display, cfg *Config) (string, error) {
 	if key := loadKey(); key != "" {
 		return key, nil
 	}
@@ -57,6 +57,13 @@ func ensureKey(ctx context.Context, display *display) (string, error) {
 			case "clear_key":
 				clearKey()
 				return "", nil
+			case "set_prefs":
+				if ev.Prefs != nil { // preferences edited while the key prompt is up
+					applyPrefs(cfg, *ev.Prefs)
+					savePrefs(prefsFromConfig(*cfg))
+					display.setConfig(*cfg)
+					display.SendPrefs(*cfg)
+				}
 			}
 		}
 	}
@@ -71,8 +78,9 @@ func runStream(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer display.Close()
+	display.SendPrefs(cfg) // the Preferences dialog needs the live values
 
-	key, err := ensureKey(ctx, display)
+	key, err := ensureKey(ctx, display, &cfg)
 	if err != nil {
 		return err
 	}
@@ -92,15 +100,15 @@ func runStream(ctx context.Context, cfg Config) error {
 	var updates chan SegmentUpdate
 	var streamDone chan error
 	sessionCancel := func() {} // cancels just the realtime session, not the pipeline
-	startStream := func(k string, s io.Reader) {
+	startStream := func(c Config, k string, s io.Reader) {
 		sctx, cancel := context.WithCancel(ctx)
 		sessionCancel = cancel
 		u := make(chan SegmentUpdate, 64)
 		d := make(chan error, 1)
 		updates, streamDone = u, d
-		go func() { d <- streamTranscribe(sctx, cfg, k, s, u) }()
+		go func() { d <- streamTranscribe(sctx, c, k, s, u) }()
 	}
-	startStream(key, src)
+	startStream(cfg, key, src)
 
 	results := make(chan transResult, 64)
 	states := map[string]*segState{}
@@ -110,7 +118,7 @@ func runStream(ctx context.Context, cfg Config) error {
 	var streamErr error
 	streamEnded := false
 	waitingForKey := false
-	pendingRestartKey := ""
+	pendingRestart := false
 
 	// A new realtime session assigns unrelated item IDs, so segments left open
 	// by the old one would block the finalization queue forever.
@@ -143,9 +151,10 @@ func runStream(ctx context.Context, cfg Config) error {
 		st.lastLaunchWords = words
 		st.finalRequested = st.seg.SrcFinal
 		id, ver, text, final := st.seg.ItemID, st.version, st.seg.Source, st.seg.SrcFinal
+		lang := cfg.TargetLang // snapshot: cfg is mutable via Preferences
 		hist := append([]string(nil), history...)
 		go func() {
-			tr, err := client.TranslateText(ctx, text, cfg.TargetLang, hist, !final)
+			tr, err := client.TranslateText(ctx, text, lang, hist, !final)
 			results <- transResult{itemID: id, version: ver, text: tr, final: final, err: err}
 		}()
 	}
@@ -258,8 +267,9 @@ func runStream(ctx context.Context, cfg Config) error {
 			switch ev.Type {
 			case "key":
 				if ev.Key != "" {
-					client.setKey(ev.Key)
-					if err := saveKey(ev.Key); err != nil {
+					key = ev.Key
+					client.setKey(key)
+					if err := saveKey(key); err != nil {
 						fmt.Fprintf(os.Stderr, "sas: storing API key: %v\n", err)
 					} else {
 						fmt.Fprintln(os.Stderr, "sas: API key updated")
@@ -270,13 +280,30 @@ func runStream(ctx context.Context, cfg Config) error {
 							return err
 						}
 						waitingForKey = false
-						startStream(ev.Key, src)
+						startStream(cfg, key, src)
 						sync() // clears the error back to "listening…"
 					} else if !streamEnded {
 						// Restart the realtime session so the new key is
 						// actually exercised — a broken one must surface as
 						// the red error, not silently ride the old auth.
-						pendingRestartKey = ev.Key
+						pendingRestart = true
+						sessionCancel()
+					}
+				}
+			case "set_prefs":
+				if ev.Prefs != nil {
+					applyPrefs(&cfg, *ev.Prefs)
+					display.setConfig(cfg)
+					display.SendPrefs(cfg) // echo back the clamped values
+					if err := savePrefs(prefsFromConfig(cfg)); err != nil {
+						fmt.Fprintf(os.Stderr, "sas: storing preferences: %v\n", err)
+					} else {
+						fmt.Fprintln(os.Stderr, "sas: preferences updated")
+					}
+					// Source language, latency, and word gap live in the
+					// realtime session — restart it to apply them.
+					if !streamEnded && !waitingForKey {
+						pendingRestart = true
 						sessionCancel()
 					}
 				}
@@ -289,15 +316,15 @@ func runStream(ctx context.Context, cfg Config) error {
 				cancel()
 			}
 		case err := <-streamDone:
-			if pendingRestartKey != "" && ctx.Err() == nil {
-				// The session was torn down to apply an edited key; bring it
-				// back up. If the new key is broken, this session fails with
-				// errBadAPIKey and lands in the parked branch below.
+			if pendingRestart && ctx.Err() == nil {
+				// The session was torn down to apply an edited key or new
+				// preferences; bring it back up. If the key is broken, this
+				// session fails with errBadAPIKey and parks below.
 				streamDone = nil
 				retireOpen()
 				sync()
-				startStream(pendingRestartKey, src)
-				pendingRestartKey = ""
+				startStream(cfg, key, src)
+				pendingRestart = false
 				continue
 			}
 			if errors.Is(err, errBadAPIKey) && ctx.Err() == nil {

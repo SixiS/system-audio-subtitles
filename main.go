@@ -38,6 +38,31 @@ func main() {
 	flag.BoolVar(&cfg.DebugEvents, "debug-events", false, "log raw realtime API events to stderr")
 	flag.Parse()
 
+	// Stored preferences (edited via the window's Preferences dialog) fill in
+	// everything the user didn't set explicitly on the command line.
+	if p := loadPrefs(); p != nil {
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if !set["target-lang"] && p.TargetLang != "" {
+			cfg.TargetLang = p.TargetLang
+		}
+		if !set["source-lang"] {
+			cfg.SourceLang = p.SourceLang
+		}
+		if !set["show-original"] {
+			cfg.ShowOriginal = p.ShowOriginal
+		}
+		if !set["no-translate"] {
+			cfg.NoTranslate = p.NoTranslate
+		}
+		if !set["stream-delay"] && p.StreamDelay != "" {
+			cfg.StreamDelay = p.StreamDelay
+		}
+		if !set["word-gap"] && p.WordGapMS > 0 {
+			cfg.WordGapMS = p.WordGapMS
+		}
+	}
+
 	if cfg.WordGapMS < 150 {
 		cfg.WordGapMS = 150 // below this, normal gaps between delta batches cause spurious cuts
 	}

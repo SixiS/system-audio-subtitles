@@ -7,14 +7,17 @@ import Foundation
 //   {"type":"append","source":"…","translation":"…"}   finalized segment → history
 //   {"type":"live","segments":[{"source":"…","translation":"…","final":false}]}
 //   {"type":"need_key"}                                 show the API-key prompt
+//   {"type":"error","message":"…"}                      red error in the live area
+//   {"type":"prefs","prefs":{…}}                        current settings (cached for the dialog)
 //
 // User actions are reported as JSON lines on stdout:
 //
-//   {"type":"key","key":"sk-…"}    key entered (first-boot prompt or settings)
-//   {"type":"clear_key"}           clear the stored key and shut down
+//   {"type":"key","key":"sk-…"}      key entered (first-boot prompt or settings)
+//   {"type":"set_prefs","prefs":{…}} preferences saved in the dialog
+//   {"type":"clear_key"}             clear the stored key and shut down
 //
 // A menu-bar status item and a gear in the window's top bar offer the settings
-// menu: Edit API Key… / Clear API Key & Quit / Quit.
+// menu: Preferences… / Edit API Key… / Clear API Key & Quit / Quit.
 //
 // Layout: [drag bar + close] / [scrollable history] / [pinned live area].
 // The history scroll view sticks to the bottom unless the user has scrolled
@@ -26,6 +29,15 @@ struct Seg: Decodable {
     let final: Bool
 }
 
+struct Prefs: Decodable {
+    let target_lang: String
+    let source_lang: String
+    let show_original: Bool
+    let no_translate: Bool
+    let stream_delay: String
+    let word_gap_ms: Int
+}
+
 struct Msg: Decodable {
     let type: String
     let source: String?
@@ -33,7 +45,12 @@ struct Msg: Decodable {
     let time: String?
     let segments: [Seg]?
     let message: String?
+    let prefs: Prefs?
 }
+
+// The pipeline pushes its live settings ("prefs" messages) so the Preferences
+// dialog always opens with current values.
+var currentPrefs: Prefs?
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
@@ -456,9 +473,84 @@ func promptForKey(firstBoot: Bool) {
     }
 }
 
+func promptForPrefs() {
+    guard let p = currentPrefs else { return }
+    let alert = NSAlert()
+    alert.messageText = "Preferences"
+    alert.informativeText = "Changes apply immediately (the live session restarts)."
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+
+    let rowH: CGFloat = 30
+    let rows: CGFloat = 6
+    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: rows * rowH))
+    func rowY(_ row: Int) -> CGFloat { (rows - CGFloat(row) - 1) * rowH + 4 }
+    func addLabel(_ text: String, row: Int) {
+        let label = NSTextField(labelWithString: text)
+        label.alignment = .right
+        label.frame = NSRect(x: 0, y: rowY(row), width: 150, height: 20)
+        accessory.addSubview(label)
+    }
+
+    addLabel("Translate into:", row: 0)
+    let targetField = NSTextField(frame: NSRect(x: 160, y: rowY(0), width: 60, height: 22))
+    targetField.stringValue = p.target_lang
+    targetField.placeholderString = "en"
+    accessory.addSubview(targetField)
+
+    addLabel("Source language:", row: 1)
+    let sourceField = NSTextField(frame: NSRect(x: 160, y: rowY(1), width: 60, height: 22))
+    sourceField.stringValue = p.source_lang
+    sourceField.placeholderString = "auto"
+    accessory.addSubview(sourceField)
+    let sourceHint = NSTextField(labelWithString: "blank = auto-detect")
+    sourceHint.textColor = .secondaryLabelColor
+    sourceHint.font = NSFont.systemFont(ofSize: 11)
+    sourceHint.frame = NSRect(x: 228, y: rowY(1) + 2, width: 180, height: 18)
+    accessory.addSubview(sourceHint)
+
+    let showOrig = NSButton(checkboxWithTitle: "Show original text", target: nil, action: nil)
+    showOrig.state = p.show_original ? .on : .off
+    showOrig.frame = NSRect(x: 160, y: rowY(2), width: 250, height: 22)
+    accessory.addSubview(showOrig)
+
+    let noTrans = NSButton(checkboxWithTitle: "Transcription only (no translation)", target: nil, action: nil)
+    noTrans.state = p.no_translate ? .on : .off
+    noTrans.frame = NSRect(x: 160, y: rowY(3), width: 250, height: 22)
+    accessory.addSubview(noTrans)
+
+    addLabel("Latency:", row: 4)
+    let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(4) - 3, width: 120, height: 26))
+    delayPopup.addItems(withTitles: ["minimal", "low", "medium", "high", "xhigh"])
+    delayPopup.selectItem(withTitle: p.stream_delay)
+    accessory.addSubview(delayPopup)
+
+    addLabel("Sentence gap (ms):", row: 5)
+    let gapField = NSTextField(frame: NSRect(x: 160, y: rowY(5), width: 70, height: 22))
+    gapField.stringValue = String(p.word_gap_ms)
+    accessory.addSubview(gapField)
+
+    alert.accessoryView = accessory
+    alert.window.initialFirstResponder = targetField
+    NSApp.activate(ignoringOtherApps: true)
+    if alert.runModal() == .alertFirstButtonReturn {
+        let target = targetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = sourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        sendToPipeline(["type": "set_prefs", "prefs": [
+            "target_lang": target.isEmpty ? "en" : target,
+            "source_lang": source,
+            "show_original": showOrig.state == .on,
+            "no_translate": noTrans.state == .on,
+            "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,
+            "word_gap_ms": Int(gapField.stringValue) ?? p.word_gap_ms,
+        ] as [String: Any]])
+    }
+}
+
 // --- menu-bar settings ---
 
 final class MenuActions: NSObject {
+    @objc func showPreferences(_: Any?) { promptForPrefs() }
     @objc func showSettings(_ sender: Any?) {
         guard let view = sender as? NSView else { return }
         statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: view)
@@ -479,6 +571,9 @@ let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLe
 statusItem.button?.image = NSImage(systemSymbolName: "captions.bubble",
                                    accessibilityDescription: "System Audio Subtitles")
 let statusMenu = NSMenu()
+let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(MenuActions.showPreferences(_:)), keyEquivalent: "")
+prefsItem.target = menuActions
+statusMenu.addItem(prefsItem)
 let editItem = NSMenuItem(title: "Edit API Key…", action: #selector(MenuActions.editKey(_:)), keyEquivalent: "")
 editItem.target = menuActions
 statusMenu.addItem(editItem)
@@ -520,6 +615,8 @@ DispatchQueue.global().async {
                 promptForKey(firstBoot: true)
             case "error":
                 renderError(msg.message ?? "error")
+            case "prefs":
+                currentPrefs = msg.prefs
             default:
                 break
             }

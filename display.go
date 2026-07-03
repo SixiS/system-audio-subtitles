@@ -26,10 +26,11 @@ type windowSeg struct {
 }
 
 // winEvent is a message from the window app on its stdout: user actions from
-// the API-key prompt and the menu-bar settings menu.
+// the API-key prompt and the settings menu.
 type winEvent struct {
-	Type string `json:"type"` // "key" (set/update the API key) or "clear_key"
-	Key  string `json:"key"`
+	Type  string `json:"type"` // "key" (set/update the API key), "clear_key", or "set_prefs"
+	Key   string `json:"key"`
+	Prefs *Prefs `json:"prefs"`
 }
 
 // display drives the native subtitle window (helper/subtitlewindow.swift) over
@@ -100,6 +101,16 @@ func (w *display) RequestKey() {
 func (w *display) ShowError(msg string) {
 	w.sendJSON(map[string]any{"type": "error", "message": msg})
 }
+
+// SendPrefs tells the window the current settings so its Preferences dialog
+// opens with the live values.
+func (w *display) SendPrefs(cfg Config) {
+	w.sendJSON(map[string]any{"type": "prefs", "prefs": prefsFromConfig(cfg)})
+}
+
+// setConfig adopts edited preferences (e.g. ShowOriginal) for future renders.
+// Must be called from the same goroutine that calls Finalize/RenderLive.
+func (w *display) setConfig(cfg Config) { w.cfg = cfg }
 
 func (w *display) sendJSON(v any) {
 	data, _ := json.Marshal(v)

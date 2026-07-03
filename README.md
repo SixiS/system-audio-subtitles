@@ -35,10 +35,15 @@ On first run:
   check System Settings → Privacy & Security → Screen & System Audio Recording.
 
 While running, a **captions icon in the menu bar** (and a gear in the window's
-top bar) has the settings: *Edit API Key…* (applies immediately — the realtime
-session restarts with the new key, and a broken key shows a red error in the
-window until it's fixed), *Clear API Key & Quit* (deletes the stored key and
-shuts everything down), and *Quit*.
+top bar) has the settings:
+
+- *Preferences…* — target/source language, show-original, transcription-only,
+  latency, and sentence gap. Saved changes apply immediately (the live session
+  restarts) and persist in the config file.
+- *Edit API Key…* — applies immediately; a broken key shows a red error in the
+  window until it's fixed.
+- *Clear API Key & Quit* — deletes the stored key (preferences survive) and
+  shuts everything down.
 
 The subtitle window floats above other apps; drag it to move, drag the corner
 grip to resize, scroll the history independently of the pinned live area.
@@ -57,6 +62,10 @@ echoed to the terminal as a plain transcript.
 --stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
 --word-gap 1000       milliseconds without new transcribed words that ends a segment
 ```
+
+All of these are also editable in the window's Preferences dialog, which
+stores them in the config file. Stored preferences are the defaults on later
+runs; an explicitly passed flag overrides the stored value for that run.
 
 Examples:
 
