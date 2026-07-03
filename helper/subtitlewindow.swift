@@ -48,11 +48,17 @@ struct Msg: Decodable {
     let segments: [Seg]?
     let message: String?
     let prefs: Prefs?
+    let idle: Bool?
 }
 
 // The pipeline pushes its live settings ("prefs" messages) so the Preferences
 // dialog always opens with current values.
 var currentPrefs: Prefs?
+
+// Idle-gate state ("status" messages): while the pipeline isn't streaming
+// audio because nothing is playing, an empty live area says "idling…".
+var isIdle = false
+var lastSegments: [Seg] = []
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
@@ -345,7 +351,8 @@ func renderLive(_ segments: [Seg]) {
         text.append(mainText(line, alpha: seg.final ? 1.0 : 0.85))
     }
     if text.length == 0 {
-        text.append(mainText(haveHistory ? "…" : "listening…", alpha: 0.6))
+        let placeholder = isIdle ? "idling…" : (haveHistory ? "…" : "listening…")
+        text.append(mainText(placeholder, alpha: 0.6))
     }
     liveLabel.attributedStringValue = text
     relayout()
@@ -700,7 +707,11 @@ DispatchQueue.global().async {
             case "append":
                 appendHistory(source: msg.source, translation: msg.translation ?? "", time: msg.time)
             case "live":
-                renderLive(msg.segments ?? [])
+                lastSegments = msg.segments ?? []
+                renderLive(lastSegments)
+            case "status":
+                isIdle = msg.idle ?? false
+                renderLive(lastSegments)
             case "need_key":
                 promptForKey(firstBoot: true)
             case "error":

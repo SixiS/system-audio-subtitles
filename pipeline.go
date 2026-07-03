@@ -106,6 +106,7 @@ func runStream(ctx context.Context, cfg Config) error {
 		u := make(chan SegmentUpdate, 64)
 		d := make(chan error, 1)
 		updates, streamDone = u, d
+		display.SetIdle(false) // a fresh session starts with the gate open
 		go func() { d <- streamTranscribe(sctx, c, k, s, u) }()
 	}
 	startStream(cfg, key, src)
@@ -354,6 +355,10 @@ func runStream(ctx context.Context, cfg Config) error {
 				updates = nil
 				continue
 			}
+			if u.IdleGate != nil {
+				display.SetIdle(*u.IdleGate)
+				continue
+			}
 			handleUpdate(u)
 			sync()
 		case r := <-results:
@@ -363,6 +368,11 @@ func runStream(ctx context.Context, cfg Config) error {
 	}
 
 	minutes := float64(streamedAudioBytes.Load()) / (sampleRate * bytesPerSample) / 60
-	fmt.Fprintf(os.Stderr, "sas: %.1f min of audio streamed\n", minutes)
+	skipped := float64(gatedAudioBytes.Load()) / (sampleRate * bytesPerSample) / 60
+	if skipped >= 0.05 {
+		fmt.Fprintf(os.Stderr, "sas: %.1f min of audio streamed (%.1f min of silence not sent)\n", minutes, skipped)
+	} else {
+		fmt.Fprintf(os.Stderr, "sas: %.1f min of audio streamed\n", minutes)
+	}
 	return streamErr
 }

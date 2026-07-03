@@ -101,9 +101,26 @@ Examples:
 ./bin/sas --no-translate --source-lang ja    # Japanese transcript, no translation
 ```
 
-Press Ctrl-C (or close the window) to stop; the minutes of audio streamed are
-reported on exit. Transcription is billed per audio-minute by the Realtime
-API, plus `gpt-4o-mini` tokens for translation.
+Press Ctrl-C (or close the window) to stop; the exit summary reports the
+minutes of audio streamed and the minutes of silence skipped.
+
+## Costs
+
+Rough numbers, at OpenAI's published pricing as of July 2026:
+
+| What | Rate | Running for an hour |
+|---|---|---|
+| Transcription (`gpt-realtime-whisper`) | $0.017 per audio-minute | ~$1.02 |
+| Translation (`gpt-4o-mini`) | ~$0.001–0.002 per minute of speech | ~$0.06–0.12 |
+| Idle — nothing playing | keepalive frames only | ~$0.002 |
+
+So an hour of continuous foreign-language audio costs about **$1.10**, and an
+hour left open in silence costs about **a fifth of a cent**. Only audio that
+is actually streamed is billed: when the tap goes quiet for ~2 seconds the
+pipeline stops sending frames (the window shows *idling…*) and resumes
+instantly on the first audible frame. Translation calls only happen while
+words are arriving. Quiet-but-audible audio (a faint music bed) still counts
+as audio — the gate only saves money when the Mac is actually silent.
 
 ## How it works
 

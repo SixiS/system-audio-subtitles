@@ -102,6 +102,12 @@ func (w *display) ShowError(msg string) {
 	w.sendJSON(map[string]any{"type": "error", "message": msg})
 }
 
+// SetIdle tells the window whether the idle gate is closed (nothing playing),
+// so an empty live area reads "idling…" instead of "listening…".
+func (w *display) SetIdle(idle bool) {
+	w.sendJSON(map[string]any{"type": "status", "idle": idle})
+}
+
 // SendPrefs tells the window the current settings so its Preferences dialog
 // opens with the live values.
 func (w *display) SendPrefs(cfg Config) {

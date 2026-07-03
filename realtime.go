@@ -30,6 +30,14 @@ const (
 
 	// The API rejects commits of very short buffers (<100 ms of audio).
 	minCommitBytes = sampleRate * bytesPerSample / 5 // 200 ms
+
+	// Idle gate: the API bills per audio-minute streamed, and the tap emits
+	// pure zeros when nothing is playing — so after silenceHold of quiet the
+	// writer stops sending frames entirely. silencePeak (~-66 dBFS) is far
+	// below any audible audio but above zero to tolerate dither.
+	silencePeak    = 16
+	silenceHold    = 2 * time.Second
+	gatedKeepalive = 15 * time.Second // one frame this often holds the session open
 )
 
 // wordActivity shares transcription-delta state between the event reader
@@ -59,13 +67,33 @@ func sentenceCount(s string) int {
 }
 
 var streamedAudioBytes atomic.Int64
+var gatedAudioBytes atomic.Int64 // silent audio dropped by the idle gate (never billed)
+
+// framePeak returns the largest absolute s16le sample in the frame.
+func framePeak(b []byte) int {
+	peak := 0
+	for i := 0; i+1 < len(b); i += 2 {
+		v := int(int16(uint16(b[i]) | uint16(b[i+1])<<8))
+		if v < 0 {
+			v = -v
+		}
+		if v > peak {
+			peak = v
+		}
+	}
+	return peak
+}
 
 // SegmentUpdate carries the full accumulated source text for one speech
 // segment (realtime item). Final marks the server's completed transcript.
+// An update with IdleGate set carries no segment at all — it reports the
+// idle gate opening (false) or closing (true) so the window can show
+// "idling…" while nothing is playing.
 type SegmentUpdate struct {
-	ItemID string
-	Text   string
-	Final  bool
+	ItemID   string
+	Text     string
+	Final    bool
+	IdleGate *bool
 }
 
 // streamTranscribe pipes PCM from src to the Realtime transcription API and
@@ -114,8 +142,18 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 
 	var commits atomic.Int32
 	var act wordActivity
+	// Gate transitions are reported through a small buffered channel: the
+	// writer must never block on (or send to) the updates channel directly —
+	// it can outlive this function, whose defer closes updates.
+	idleCh := make(chan bool, 4)
+	notifyIdle := func(idle bool) {
+		select {
+		case idleCh <- idle:
+		default: // best-effort; a full channel just drops the status blink
+		}
+	}
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- streamAudio(ctx, cfg, conn, src, &commits, &act) }()
+	go func() { writerDone <- streamAudio(ctx, cfg, conn, src, &commits, &act, notifyIdle) }()
 
 	type readFrame struct {
 		data []byte
@@ -159,6 +197,8 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 			drainTimer = time.After(8 * time.Second) // input ended; wait for stragglers
 		case <-drainTimer:
 			return nil
+		case idle := <-idleCh:
+			send(SegmentUpdate{IdleGate: &idle})
 		case f := <-reads:
 			if f.err != nil {
 				if ctx.Err() != nil || writerEnded {
@@ -228,7 +268,7 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 // segment once the open segment has words but no new delta has arrived for
 // --word-gap ms. Wordless audio (music, silence) never commits on its own — it
 // just accumulates into whatever segment the next speech ends up in.
-func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.Reader, commits *atomic.Int32, act *wordActivity) error {
+func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.Reader, commits *atomic.Int32, act *wordActivity, notifyIdle func(bool)) error {
 	wordGap := time.Duration(cfg.WordGapMS) * time.Millisecond
 	frame := make([]byte, frameBytes)
 	batch := make([]byte, 0, frameBytes*4)
@@ -261,6 +301,10 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 		return writeJSON(ctx, conn, map[string]any{"type": "input_audio_buffer.commit"})
 	}
 
+	const frameDur = frameMS * time.Millisecond
+	var quietFor, sinceKeepalive time.Duration
+	gateClosed := false
+
 	for ctx.Err() == nil {
 		if _, err := io.ReadFull(src, frame); err != nil {
 			// Input ended. Commit whatever is buffered unconditionally: with
@@ -269,13 +313,48 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 			commit()
 			return nil
 		}
-		batch = append(batch, frame...)
-		if len(batch) >= frameBytes*4 {
-			if err := flush(); err != nil {
-				if ctx.Err() != nil {
-					return nil
+		if framePeak(frame) >= silencePeak {
+			quietFor = 0
+		} else {
+			quietFor += frameDur
+		}
+		if quietFor >= silenceHold {
+			// Idle gate closed: nothing is playing, so don't pay to stream
+			// zeros. A single frame every gatedKeepalive keeps the session
+			// from idling out; the gate reopens on the first audible frame.
+			// The commit check below still runs — with --word-gap longer than
+			// silenceHold, a finished segment commits while the gate is shut.
+			if !gateClosed {
+				gateClosed = true
+				notifyIdle(true)
+			}
+			sinceKeepalive += frameDur
+			if sinceKeepalive >= gatedKeepalive {
+				sinceKeepalive = 0
+				batch = append(batch, frame...)
+				if err := flush(); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
 				}
-				return err
+			} else {
+				gatedAudioBytes.Add(int64(len(frame)))
+			}
+		} else {
+			if gateClosed {
+				gateClosed = false
+				notifyIdle(false)
+			}
+			sinceKeepalive = 0
+			batch = append(batch, frame...)
+			if len(batch) >= frameBytes*4 {
+				if err := flush(); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
+				}
 			}
 		}
 		// The lastCommit guard covers the gap before the server's committed
