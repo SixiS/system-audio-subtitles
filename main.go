@@ -49,15 +49,10 @@ func main() {
 		return
 	}
 
-	key := os.Getenv("OPENAI_API_KEY")
-	if key == "" {
-		fatal("OPENAI_API_KEY is not set")
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := runStream(ctx, cfg, key); err != nil {
+	if err := runStream(ctx, cfg); err != nil {
 		fatal(err.Error())
 	}
 }

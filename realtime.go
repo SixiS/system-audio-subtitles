@@ -4,15 +4,21 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// errBadAPIKey marks failures the user can fix by entering a working key in
+// the settings menu; the pipeline waits and retries instead of exiting.
+var errBadAPIKey = errors.New("the OpenAI API rejected the key")
 
 const (
 	realtimeURL   = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -55,8 +61,11 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+key)
-	conn, _, err := websocket.Dial(ctx, realtimeURL, &websocket.DialOptions{HTTPHeader: hdr})
+	conn, resp, err := websocket.Dial(ctx, realtimeURL, &websocket.DialOptions{HTTPHeader: hdr})
 	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return fmt.Errorf("%w (HTTP %d)", errBadAPIKey, resp.StatusCode)
+		}
 		return fmt.Errorf("connecting to realtime API: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "done")
@@ -183,6 +192,9 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 				msg := truncate(string(f.data), 300)
 				if ev.Error != nil {
 					msg = ev.Error.Message
+				}
+				if strings.Contains(strings.ToLower(msg), "api key") {
+					return fmt.Errorf("%w: %s", errBadAPIKey, msg)
 				}
 				return fmt.Errorf("realtime API error: %s", msg)
 			}

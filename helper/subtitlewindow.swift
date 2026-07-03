@@ -6,6 +6,15 @@ import Foundation
 //
 //   {"type":"append","source":"…","translation":"…"}   finalized segment → history
 //   {"type":"live","segments":[{"source":"…","translation":"…","final":false}]}
+//   {"type":"need_key"}                                 show the API-key prompt
+//
+// User actions are reported as JSON lines on stdout:
+//
+//   {"type":"key","key":"sk-…"}    key entered (first-boot prompt or settings)
+//   {"type":"clear_key"}           clear the stored key and shut down
+//
+// A menu-bar status item and a gear in the window's top bar offer the settings
+// menu: Edit API Key… / Clear API Key & Quit / Quit.
 //
 // Layout: [drag bar + close] / [scrollable history] / [pinned live area].
 // The history scroll view sticks to the bottom unless the user has scrolled
@@ -23,10 +32,28 @@ struct Msg: Decodable {
     let translation: String?
     let time: String?
     let segments: [Seg]?
+    let message: String?
 }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+
+// Cmd-V & friends only work if an Edit menu supplies the standard key
+// equivalents — script apps have no main menu by default, which made paste
+// into the API-key field a no-op.
+let editMenu = NSMenu(title: "Edit")
+editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+editMenu.addItem(.separator())
+editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+let editMenuItem = NSMenuItem()
+editMenuItem.submenu = editMenu
+let mainMenu = NSMenu()
+mainMenu.addItem(editMenuItem)
+app.mainMenu = mainMenu
 
 let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 var panelWidth = min(920, screen.width * 0.72) // adopts the user's width after a manual resize
@@ -264,6 +291,16 @@ func renderLive(_ segments: [Seg]) {
     relayout()
 }
 
+// A pipeline problem the user can fix (bad API key) replaces the live area in
+// red until the next live render clears it.
+func renderError(_ message: String) {
+    liveLabel.attributedStringValue = NSAttributedString(string: message, attributes: [
+        .foregroundColor: NSColor.systemRed,
+        .font: mainFont, .paragraphStyle: mainPara,
+    ])
+    relayout()
+}
+
 // Adopt a user-chosen size: the new width re-wraps text, and the height delta
 // goes to the history viewport; the live area keeps auto-sizing.
 func adoptManualSize() {
@@ -336,6 +373,139 @@ NSLayoutConstraint.activate([
     grip.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -5),
 ])
 
+// --- API key management ---
+// The pipeline owns the key (storage and API calls); this app is just the UI.
+
+// Sampled at launch: the button only appears when the variable is genuinely
+// present (and non-blank) in the environment this process inherited.
+let envKey = (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+func sendToPipeline(_ obj: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data([0x0a]))
+}
+
+final class LinkOpener: NSObject {
+    @objc func openKeysPage(_: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://platform.openai.com/account/api-keys")!)
+    }
+}
+let linkOpener = LinkOpener()
+
+func promptForKey(firstBoot: Bool) {
+    let alert = NSAlert()
+    alert.messageText = firstBoot ? "OpenAI API Key" : "Edit OpenAI API Key"
+    alert.informativeText = firstBoot
+        ? "Transcription and translation use the OpenAI API. Paste an API key to get started; it is stored locally for future runs."
+        : "The new key replaces the stored one."
+    // A wrapping, monospaced field: API keys are ~160 characters, and a
+    // single-line field scrolls to show only the tail after a paste — which
+    // reads as "the paste didn't work". Here the whole key is visible.
+    let field = NSTextField(frame: NSRect(x: 0, y: 28, width: 420, height: 54))
+    field.placeholderString = "sk-…"
+    field.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    field.usesSingleLineMode = false
+    field.lineBreakMode = .byCharWrapping
+    field.cell?.wraps = true
+    field.cell?.isScrollable = false
+    let linkPara = NSMutableParagraphStyle()
+    linkPara.alignment = .left
+    let link = NSButton(title: "", target: linkOpener, action: #selector(LinkOpener.openKeysPage(_:)))
+    link.isBordered = false
+    link.attributedTitle = NSAttributedString(
+        string: "You can find your API key at platform.openai.com/account/api-keys",
+        attributes: [
+            .foregroundColor: NSColor.linkColor,
+            .font: NSFont.systemFont(ofSize: 11),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .paragraphStyle: linkPara,
+        ])
+    link.frame = NSRect(x: -6, y: 2, width: 424, height: 18)
+    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 82))
+    accessory.addSubview(field)
+    accessory.addSubview(link)
+    alert.accessoryView = accessory
+    alert.window.initialFirstResponder = field
+    alert.addButton(withTitle: "Save")
+    if !envKey.isEmpty {
+        alert.addButton(withTitle: "Use $OPENAI_API_KEY")
+    }
+    alert.addButton(withTitle: firstBoot ? "Quit" : "Cancel")
+    NSApp.activate(ignoringOtherApps: true)
+    while true {
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: // Save
+            // Keys never contain whitespace; drop any line breaks a wrapped
+            // terminal copy smuggled in.
+            let key = field.stringValue.components(separatedBy: .whitespacesAndNewlines).joined()
+            if key.isEmpty {
+                if firstBoot { continue } // can't do anything without one
+                return
+            }
+            sendToPipeline(["type": "key", "key": key])
+            return
+        case .alertSecondButtonReturn where !envKey.isEmpty:
+            sendToPipeline(["type": "key", "key": envKey])
+            return
+        default: // Quit / Cancel
+            if firstBoot { app.terminate(nil) }
+            return
+        }
+    }
+}
+
+// --- menu-bar settings ---
+
+final class MenuActions: NSObject {
+    @objc func showSettings(_ sender: Any?) {
+        guard let view = sender as? NSView else { return }
+        statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: view)
+    }
+
+    @objc func editKey(_: Any?) { promptForKey(firstBoot: false) }
+    @objc func clearKeyAndQuit(_: Any?) {
+        sendToPipeline(["type": "clear_key"])
+        // The pipeline clears the stored key and shuts everything down, which
+        // EOFs our stdin; the delayed terminate is a fallback if it's gone.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { app.terminate(nil) }
+    }
+    @objc func quit(_: Any?) { app.terminate(nil) }
+}
+let menuActions = MenuActions()
+
+let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+statusItem.button?.image = NSImage(systemSymbolName: "captions.bubble",
+                                   accessibilityDescription: "System Audio Subtitles")
+let statusMenu = NSMenu()
+let editItem = NSMenuItem(title: "Edit API Key…", action: #selector(MenuActions.editKey(_:)), keyEquivalent: "")
+editItem.target = menuActions
+statusMenu.addItem(editItem)
+let clearItem = NSMenuItem(title: "Clear API Key & Quit", action: #selector(MenuActions.clearKeyAndQuit(_:)), keyEquivalent: "")
+clearItem.target = menuActions
+statusMenu.addItem(clearItem)
+statusMenu.addItem(.separator())
+let quitItem = NSMenuItem(title: "Quit", action: #selector(MenuActions.quit(_:)), keyEquivalent: "")
+quitItem.target = menuActions
+statusMenu.addItem(quitItem)
+statusItem.menu = statusMenu
+
+// The same menu is reachable from a gear in the window's top-left bar.
+let settingsButton = NSButton()
+settingsButton.isBordered = false
+settingsButton.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: "Settings")
+settingsButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+settingsButton.contentTintColor = NSColor.white.withAlphaComponent(0.55)
+settingsButton.target = menuActions
+settingsButton.action = #selector(MenuActions.showSettings(_:))
+settingsButton.translatesAutoresizingMaskIntoConstraints = false
+bar.addSubview(settingsButton)
+NSLayoutConstraint.activate([
+    settingsButton.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 10),
+    settingsButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+])
+
 DispatchQueue.global().async {
     while let line = readLine(strippingNewline: true) {
         guard let data = line.data(using: .utf8),
@@ -346,6 +516,10 @@ DispatchQueue.global().async {
                 appendHistory(source: msg.source, translation: msg.translation ?? "", time: msg.time)
             case "live":
                 renderLive(msg.segments ?? [])
+            case "need_key":
+                promptForKey(firstBoot: true)
+            case "error":
+                renderError(msg.message ?? "error")
             default:
                 break
             }

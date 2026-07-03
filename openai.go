@@ -8,18 +8,32 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 const apiBase = "https://api.openai.com/v1"
 
 type Client struct {
-	key  string
+	mu   sync.Mutex
+	key  string // editable at runtime via the window's settings menu
 	http *http.Client
 }
 
 func newClient(key string) *Client {
 	return &Client{key: key, http: &http.Client{Timeout: 90 * time.Second}}
+}
+
+func (c *Client) setKey(key string) {
+	c.mu.Lock()
+	c.key = key
+	c.mu.Unlock()
+}
+
+func (c *Client) apiKey() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.key
 }
 
 // TranslateText translates one subtitle line with gpt-4o-mini. history holds
@@ -82,7 +96,7 @@ func (c *Client) doWithRetry(ctx context.Context, url, contentType string, body 
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+c.key)
+		req.Header.Set("Authorization", "Bearer "+c.apiKey())
 		req.Header.Set("Content-Type", contentType)
 
 		resp, err := c.http.Do(req)

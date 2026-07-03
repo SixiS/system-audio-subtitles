@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -29,15 +31,40 @@ type segState struct {
 	finalRequested  bool
 }
 
-func runStream(ctx context.Context, cfg Config, key string) error {
+// ensureKey returns the stored API key. On first boot (nothing stored) it asks
+// the window to prompt — a text field, plus a "use $OPENAI_API_KEY" button when
+// the environment has one — and stores the answer. Returns "" if the user
+// dismissed the prompt (quit) instead of providing a key.
+func ensureKey(ctx context.Context, display *display) (string, error) {
+	if key := loadKey(); key != "" {
+		return key, nil
+	}
+	display.RequestKey()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", nil // window closed at the prompt
+		case ev := <-display.Events:
+			switch ev.Type {
+			case "key":
+				if ev.Key == "" {
+					continue
+				}
+				if err := saveKey(ev.Key); err != nil {
+					fmt.Fprintf(os.Stderr, "sas: storing API key: %v\n", err)
+				}
+				return ev.Key, nil
+			case "clear_key":
+				clearKey()
+				return "", nil
+			}
+		}
+	}
+}
+
+func runStream(ctx context.Context, cfg Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	src, cleanup, err := openPCMSource(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 
 	display, err := newDisplay(cfg, cancel) // window closed by user → stop the pipeline
 	if err != nil {
@@ -45,10 +72,35 @@ func runStream(ctx context.Context, cfg Config, key string) error {
 	}
 	defer display.Close()
 
+	key, err := ensureKey(ctx, display)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		return nil // prompt dismissed — nothing to do
+	}
+
+	src, cleanup, err := openPCMSource(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	// cleanup is reassigned when capture restarts after a bad-key wait, so the
+	// deferred call must resolve it late.
+	defer func() { cleanup() }()
+
 	client := newClient(key)
-	updates := make(chan SegmentUpdate, 64)
-	streamDone := make(chan error, 1)
-	go func() { streamDone <- streamTranscribe(ctx, cfg, key, src, updates) }()
+	var updates chan SegmentUpdate
+	var streamDone chan error
+	sessionCancel := func() {} // cancels just the realtime session, not the pipeline
+	startStream := func(k string, s io.Reader) {
+		sctx, cancel := context.WithCancel(ctx)
+		sessionCancel = cancel
+		u := make(chan SegmentUpdate, 64)
+		d := make(chan error, 1)
+		updates, streamDone = u, d
+		go func() { d <- streamTranscribe(sctx, cfg, k, s, u) }()
+	}
+	startStream(key, src)
 
 	results := make(chan transResult, 64)
 	states := map[string]*segState{}
@@ -57,6 +109,20 @@ func runStream(ctx context.Context, cfg Config, key string) error {
 	inflight := 0
 	var streamErr error
 	streamEnded := false
+	waitingForKey := false
+	pendingRestartKey := ""
+
+	// A new realtime session assigns unrelated item IDs, so segments left open
+	// by the old one would block the finalization queue forever.
+	retireOpen := func() {
+		for _, id := range order {
+			st := states[id]
+			if st.seg.Translation == "" {
+				st.seg.Translation = st.seg.Source
+			}
+			st.seg.SrcFinal, st.seg.TransFinal = true, true
+		}
+	}
 
 	launch := func(st *segState) {
 		if cfg.NoTranslate || st.inflight || st.seg.TransFinal {
@@ -188,7 +254,64 @@ func runStream(ctx context.Context, cfg Config, key string) error {
 		case <-ctx.Done():
 			fmt.Println()
 			return streamErr
+		case ev := <-display.Events:
+			switch ev.Type {
+			case "key":
+				if ev.Key != "" {
+					client.setKey(ev.Key)
+					if err := saveKey(ev.Key); err != nil {
+						fmt.Fprintf(os.Stderr, "sas: storing API key: %v\n", err)
+					} else {
+						fmt.Fprintln(os.Stderr, "sas: API key updated")
+					}
+					if waitingForKey {
+						src, cleanup, err = openPCMSource(ctx, cfg)
+						if err != nil {
+							return err
+						}
+						waitingForKey = false
+						startStream(ev.Key, src)
+						sync() // clears the error back to "listening…"
+					} else if !streamEnded {
+						// Restart the realtime session so the new key is
+						// actually exercised — a broken one must surface as
+						// the red error, not silently ride the old auth.
+						pendingRestartKey = ev.Key
+						sessionCancel()
+					}
+				}
+			case "clear_key":
+				if err := clearKey(); err != nil {
+					fmt.Fprintf(os.Stderr, "sas: clearing API key: %v\n", err)
+				} else {
+					fmt.Fprintln(os.Stderr, "sas: API key cleared")
+				}
+				cancel()
+			}
 		case err := <-streamDone:
+			if pendingRestartKey != "" && ctx.Err() == nil {
+				// The session was torn down to apply an edited key; bring it
+				// back up. If the new key is broken, this session fails with
+				// errBadAPIKey and lands in the parked branch below.
+				streamDone = nil
+				retireOpen()
+				sync()
+				startStream(pendingRestartKey, src)
+				pendingRestartKey = ""
+				continue
+			}
+			if errors.Is(err, errBadAPIKey) && ctx.Err() == nil {
+				// Fixable: park capture, show the problem, and wait for a
+				// corrected key from the settings menu.
+				cleanup()
+				streamDone = nil
+				waitingForKey = true
+				retireOpen()
+				sync()
+				fmt.Fprintf(os.Stderr, "sas: %v\n", err)
+				display.ShowError("Invalid OpenAI API key — fix it via ⚙ → Edit API Key…")
+				continue
+			}
 			streamErr = err
 			streamEnded = true
 			streamDone = nil
