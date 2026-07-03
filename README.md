@@ -1,4 +1,8 @@
-# system audio subtitles
+<p align="center">
+  <img src="assets/icon.png" width="192" alt="system audio subtitles icon">
+</p>
+
+# System Audio Subtitles
 
 Live subtitles for whatever your Mac is playing, in a floating native window.
 Captures system audio natively (no BlackHole, no ffmpeg), streams it to the
@@ -152,6 +156,7 @@ streamrun.go                 progressive-translation manager
 openai.go                    REST API client (translation, retries)
 display.go                   subtitle-window driver
 wav.go                       WAV encode/decode helpers
+assets/                      app icon (PNG + .icns) and the script that draws it
 PLAN.md                      design decisions, milestones, roadmap
 ```
 
