@@ -510,21 +510,49 @@ func promptForPrefs() {
     }
 
     addLabel("Translate into:", row: 0)
-    let targetField = NSTextField(frame: NSRect(x: 160, y: rowY(0), width: 60, height: 22))
-    targetField.stringValue = p.target_lang
-    targetField.placeholderString = "en"
-    accessory.addSubview(targetField)
+    let languages: [(code: String, name: String)] = [
+        ("en", "English"), ("af", "Afrikaans"), ("ar", "Arabic"), ("zh", "Chinese"),
+        ("cs", "Czech"), ("da", "Danish"), ("nl", "Dutch"), ("fi", "Finnish"),
+        ("fr", "French"), ("de", "German"), ("el", "Greek"), ("he", "Hebrew"),
+        ("hi", "Hindi"), ("hu", "Hungarian"), ("id", "Indonesian"), ("it", "Italian"),
+        ("ja", "Japanese"), ("ko", "Korean"), ("no", "Norwegian"), ("pl", "Polish"),
+        ("pt", "Portuguese"), ("ro", "Romanian"), ("ru", "Russian"), ("es", "Spanish"),
+        ("sv", "Swedish"), ("th", "Thai"), ("tr", "Turkish"), ("uk", "Ukrainian"),
+        ("vi", "Vietnamese"),
+    ]
+    let targetPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(0) - 3, width: 170, height: 26))
+    var targetCodes: [String] = []
+    for (code, name) in languages {
+        targetPopup.addItem(withTitle: "\(name) (\(code))")
+        targetCodes.append(code)
+    }
+    if let idx = targetCodes.firstIndex(of: p.target_lang) {
+        targetPopup.selectItem(at: idx)
+    } else if !p.target_lang.isEmpty {
+        // A code set from the CLI that isn't in the curated list stays selectable.
+        targetPopup.addItem(withTitle: p.target_lang)
+        targetCodes.append(p.target_lang)
+        targetPopup.selectItem(at: targetCodes.count - 1)
+    }
+    accessory.addSubview(targetPopup)
 
     addLabel("Source language:", row: 1)
-    let sourceField = NSTextField(frame: NSRect(x: 160, y: rowY(1), width: 60, height: 22))
-    sourceField.stringValue = p.source_lang
-    sourceField.placeholderString = "auto"
-    accessory.addSubview(sourceField)
-    let sourceHint = NSTextField(labelWithString: "blank = auto-detect")
-    sourceHint.textColor = .secondaryLabelColor
-    sourceHint.font = NSFont.systemFont(ofSize: 11)
-    sourceHint.frame = NSRect(x: 228, y: rowY(1) + 2, width: 180, height: 18)
-    accessory.addSubview(sourceHint)
+    let sourcePopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(1) - 3, width: 170, height: 26))
+    var sourceCodes: [String] = [""] // first item: auto-detect
+    sourcePopup.addItem(withTitle: "Auto-detect")
+    for (code, name) in languages {
+        sourcePopup.addItem(withTitle: "\(name) (\(code))")
+        sourceCodes.append(code)
+    }
+    if let idx = sourceCodes.firstIndex(of: p.source_lang) {
+        sourcePopup.selectItem(at: idx)
+    } else {
+        // A hint set from the CLI that isn't in the curated list stays selectable.
+        sourcePopup.addItem(withTitle: p.source_lang)
+        sourceCodes.append(p.source_lang)
+        sourcePopup.selectItem(at: sourceCodes.count - 1)
+    }
+    accessory.addSubview(sourcePopup)
 
     let showOrig = NSButton(checkboxWithTitle: "Show original text", target: nil, action: nil)
     showOrig.state = p.show_original ? .on : .off
@@ -558,13 +586,15 @@ func promptForPrefs() {
     accessory.addSubview(maxSentHint)
 
     alert.accessoryView = accessory
-    alert.window.initialFirstResponder = targetField
+    alert.window.initialFirstResponder = gapField
     NSApp.activate(ignoringOtherApps: true)
     if alert.runModal() == .alertFirstButtonReturn {
-        let target = targetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = sourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tIdx = targetPopup.indexOfSelectedItem
+        let target = (tIdx >= 0 && tIdx < targetCodes.count) ? targetCodes[tIdx] : "en"
+        let sIdx = sourcePopup.indexOfSelectedItem
+        let source = (sIdx >= 0 && sIdx < sourceCodes.count) ? sourceCodes[sIdx] : ""
         sendToPipeline(["type": "set_prefs", "prefs": [
-            "target_lang": target.isEmpty ? "en" : target,
+            "target_lang": target,
             "source_lang": source,
             "show_original": showOrig.state == .on,
             "no_translate": noTrans.state == .on,
