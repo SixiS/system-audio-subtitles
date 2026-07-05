@@ -356,6 +356,11 @@ func runStream(ctx context.Context, cfg Config) error {
 				continue
 			}
 			if u.IdleGate != nil {
+				if *u.IdleGate {
+					fmt.Fprintln(os.Stderr, "sas: idle — silence, audio streaming paused")
+				} else {
+					fmt.Fprintln(os.Stderr, "sas: audio resumed")
+				}
 				display.SetIdle(*u.IdleGate)
 				continue
 			}

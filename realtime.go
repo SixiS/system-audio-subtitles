@@ -31,10 +31,12 @@ const (
 	// The API rejects commits of very short buffers (<100 ms of audio).
 	minCommitBytes = sampleRate * bytesPerSample / 5 // 200 ms
 
-	// Idle gate: the API bills per audio-minute streamed, and the tap emits
-	// pure zeros when nothing is playing — so after silenceHold of quiet the
-	// writer stops sending frames entirely. silencePeak (~-66 dBFS) is far
-	// below any audible audio but above zero to tolerate dither.
+	// Idle gate: the API bills per audio-minute streamed, and a silent Mac
+	// reaches us as either near-zero frames (some process rendering digital
+	// silence) or no frames at all (nothing rendering — the tap goes fully
+	// quiet). After silenceHold without an audible frame the writer stops
+	// sending audio. silencePeak (~-66 dBFS) is far below any audible audio
+	// but above zero to tolerate dither.
 	silencePeak    = 16
 	silenceHold    = 2 * time.Second
 	gatedKeepalive = 15 * time.Second // one frame this often holds the session open
@@ -270,7 +272,6 @@ func streamTranscribe(ctx context.Context, cfg Config, key string, src io.Reader
 // just accumulates into whatever segment the next speech ends up in.
 func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.Reader, commits *atomic.Int32, act *wordActivity, notifyIdle func(bool)) error {
 	wordGap := time.Duration(cfg.WordGapMS) * time.Millisecond
-	frame := make([]byte, frameBytes)
 	batch := make([]byte, 0, frameBytes*4)
 	pending := 0 // audio bytes sent since the last commit
 	var lastCommit time.Time
@@ -301,78 +302,123 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 		return writeJSON(ctx, conn, map[string]any{"type": "input_audio_buffer.commit"})
 	}
 
-	const frameDur = frameMS * time.Millisecond
-	var quietFor, sinceKeepalive time.Duration
-	gateClosed := false
+	// A silent Mac reaches us in two different ways: near-zero frames (some
+	// process rendering digital silence) or no frames at all (nothing
+	// rendering — the tap delivers nothing). The gate therefore closes on
+	// wall-clock time since the last audible frame, and a reader goroutine
+	// feeds frames so this loop can also wake on a timer when the tap is
+	// fully quiet — to close the gate, send keepalives, and still commit a
+	// trailing segment on its word gap.
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	frames := make(chan readResult, 4)
+	go func() {
+		for {
+			f := make([]byte, frameBytes)
+			if _, err := io.ReadFull(src, f); err != nil {
+				select {
+				case frames <- readResult{nil, err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case frames <- readResult{f, nil}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-	for ctx.Err() == nil {
-		if _, err := io.ReadFull(src, frame); err != nil {
-			// Input ended. Commit whatever is buffered unconditionally: with
-			// --input the whole file may upload before any delta arrives, so
-			// hasWords can't be trusted here.
-			commit()
-			return nil
-		}
-		if framePeak(frame) >= silencePeak {
-			quietFor = 0
-		} else {
-			quietFor += frameDur
-		}
-		if quietFor >= silenceHold {
-			// Idle gate closed: nothing is playing, so don't pay to stream
-			// zeros. A single frame every gatedKeepalive keeps the session
-			// from idling out; the gate reopens on the first audible frame.
-			// The commit check below still runs — with --word-gap longer than
-			// silenceHold, a finished segment commits while the gate is shut.
-			if !gateClosed {
-				gateClosed = true
-				notifyIdle(true)
-			}
-			sinceKeepalive += frameDur
-			if sinceKeepalive >= gatedKeepalive {
-				sinceKeepalive = 0
-				batch = append(batch, frame...)
-				if err := flush(); err != nil {
-					if ctx.Err() != nil {
-						return nil
-					}
-					return err
-				}
-			} else {
-				gatedAudioBytes.Add(int64(len(frame)))
-			}
-		} else {
-			if gateClosed {
-				gateClosed = false
-				notifyIdle(false)
-			}
-			sinceKeepalive = 0
-			batch = append(batch, frame...)
-			if len(batch) >= frameBytes*4 {
-				if err := flush(); err != nil {
-					if ctx.Err() != nil {
-						return nil
-					}
-					return err
-				}
-			}
-		}
+	commitCheck := func() error {
 		// The lastCommit guard covers the gap before the server's committed
 		// event resets hasWords — without it we'd re-commit immediately.
 		if act.hasWords.Load() && time.Since(lastCommit) >= wordGap {
 			gapElapsed := time.Since(time.Unix(0, act.lastDeltaNano.Load())) >= wordGap
 			if gapElapsed || act.forceCommit.Load() {
 				act.forceCommit.Store(false)
-				if err := commit(); err != nil {
-					if ctx.Err() != nil {
-						return nil
-					}
-					return err
-				}
+				return commit()
 			}
 		}
+		return nil
 	}
-	return nil
+
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	lastAudible := time.Now()
+	var lastKeepalive time.Time
+	gateClosed := false
+	closeGate := func() error {
+		gateClosed = true
+		lastKeepalive = time.Now()
+		notifyIdle(true)
+		// Don't leave real audio parked in the batch for the whole idle
+		// stretch — it belongs to the audible period that just ended.
+		return flush()
+	}
+
+	for {
+		var err error
+		select {
+		case <-ctx.Done():
+			return nil
+		case r := <-frames:
+			if r.err != nil {
+				// Input ended. Commit whatever is buffered unconditionally:
+				// with --input the whole file may upload before any delta
+				// arrives, so hasWords can't be trusted here.
+				commit()
+				return nil
+			}
+			if framePeak(r.data) >= silencePeak {
+				lastAudible = time.Now()
+				if gateClosed {
+					gateClosed = false
+					notifyIdle(false)
+				}
+			}
+			switch {
+			case !gateClosed && time.Since(lastAudible) >= silenceHold:
+				err = closeGate()
+				gatedAudioBytes.Add(int64(len(r.data)))
+			case gateClosed:
+				// Idle: don't pay to stream silence. One frame every
+				// gatedKeepalive holds the session open.
+				if time.Since(lastKeepalive) >= gatedKeepalive {
+					lastKeepalive = time.Now()
+					batch = append(batch, r.data...)
+					err = flush()
+				} else {
+					gatedAudioBytes.Add(int64(len(r.data)))
+				}
+			default:
+				batch = append(batch, r.data...)
+				if len(batch) >= frameBytes*4 {
+					err = flush()
+				}
+			}
+		case <-tick.C:
+			if !gateClosed && time.Since(lastAudible) >= silenceHold {
+				err = closeGate()
+			} else if gateClosed && time.Since(lastKeepalive) >= gatedKeepalive {
+				// No source frames to forward — synthesize a silent one.
+				lastKeepalive = time.Now()
+				batch = append(batch, make([]byte, frameBytes)...)
+				err = flush()
+			}
+		}
+		if err == nil {
+			err = commitCheck()
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 func writeJSON(ctx context.Context, conn *websocket.Conn, v any) error {
