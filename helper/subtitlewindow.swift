@@ -108,7 +108,7 @@ app.mainMenu = mainMenu
 let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 var panelWidth = min(920, screen.width * 0.72) // adopts the user's width after a manual resize
 let textInset: CGFloat = 16
-var historyHeight: CGFloat = 220 // ≈ three sections; manual resizes adjust this
+var historyHeight: CGFloat = 220 // viewport auto-grow cap; manual resizes replace it
 
 // --- shared text styles ---
 
@@ -237,28 +237,14 @@ history.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                          height: CGFloat.greatestFiniteMagnitude)
 scroll.documentView = history
 
-let divider = NSView()
-divider.wantsLayer = true
-divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
-divider.translatesAutoresizingMaskIntoConstraints = false
-divider.isHidden = true
-container.addSubview(divider)
-
-// --- pinned live area ---
-
-let liveLabel = NSTextField(wrappingLabelWithString: "listening…")
-// Wrapping labels are selectable by default; selection routes through the
-// window's field editor, which mangles the styled runs on redraw.
-liveLabel.isSelectable = false
-liveLabel.textColor = NSColor.white.withAlphaComponent(0.6)
-liveLabel.font = mainFont
-liveLabel.alignment = .center
-liveLabel.preferredMaxLayoutWidth = panelWidth - 2 * textInset
-liveLabel.translatesAutoresizingMaskIntoConstraints = false
-container.addSubview(liveLabel)
-
 panel.contentView = container
 
+// One continuous, bottom-stuck column: finalized history is the immutable
+// head of the text storage and the in-progress segments are its mutable tail
+// (rewritten on every live update). Growing text pushes everything above it
+// up, teleprompter-style — and when a segment finalizes, its glyphs stay put;
+// the next live line simply starts underneath.
+//
 // Below-required priority: a required height here would fully determine the
 // window's height and AppKit would refuse vertical drags. At 400, the user's
 // drag wins and the scroll area absorbs the height delta.
@@ -274,15 +260,8 @@ NSLayoutConstraint.activate([
     scroll.topAnchor.constraint(equalTo: bar.bottomAnchor),
     scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
     scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+    scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
     scrollHeightConstraint,
-    divider.topAnchor.constraint(equalTo: scroll.bottomAnchor),
-    divider.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-    divider.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-    divider.heightAnchor.constraint(equalToConstant: 1),
-    liveLabel.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 10),
-    liveLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: textInset),
-    liveLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -textInset),
-    liveLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -textInset),
 ])
 panel.orderFrontRegardless()
 
@@ -291,6 +270,17 @@ panel.orderFrontRegardless()
 var manualResizing = false
 
 func relayout() {
+    // Ratchet the viewport: grow with the text up to historyHeight (the cap;
+    // a manual resize replaces it), never shrink on its own — so the window
+    // settles at a stable size instead of jumping as segments come and go.
+    if let lm = history.layoutManager, let tc = history.textContainer {
+        lm.ensureLayout(for: tc)
+        let content = lm.usedRect(for: tc).height + history.textContainerInset.height * 2
+        let grown = max(scrollHeightConstraint.constant, min(content, historyHeight))
+        if grown != scrollHeightConstraint.constant {
+            scrollHeightConstraint.constant = grown
+        }
+    }
     if panel.inLiveResize || manualResizing {
         return // the user's drag owns the frame right now
     }
@@ -311,12 +301,33 @@ func historyIsAtBottom() -> Bool {
     return visible.maxY >= history.frame.height - 40
 }
 
-var haveHistory = false
+// Everything before fixedLength is finalized history and never touched
+// again — which is what keeps text from moving when it "enters" history.
+// Everything after it is the in-progress area, rewritten on each update.
+var fixedLength = 0
+
+// setTail replaces the in-progress area (everything after the history) with
+// new content, keeping the view pinned to the bottom if it was there.
+func setTail(_ text: NSAttributedString) {
+    guard let storage = history.textStorage else { return }
+    let stick = historyIsAtBottom()
+    let tail = NSMutableAttributedString()
+    if fixedLength > 0 {
+        tail.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: mainPara]))
+    }
+    tail.append(text)
+    storage.replaceCharacters(in: NSRange(location: fixedLength, length: storage.length - fixedLength),
+                              with: tail)
+    relayout()
+    if stick {
+        history.scrollToEndOfDocument(nil)
+    }
+}
 
 func appendHistory(source: String?, translation: String, time: String?) {
     let stick = historyIsAtBottom()
     let chunk = NSMutableAttributedString()
-    if haveHistory {
+    if fixedLength > 0 {
         chunk.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: mainPara]))
     }
     if let time, !time.isEmpty {
@@ -326,12 +337,10 @@ func appendHistory(source: String?, translation: String, time: String?) {
         chunk.append(sourceText(source + "\n"))
     }
     chunk.append(mainText(sentenceBreaks(translation)))
-    history.textStorage?.append(chunk)
-    if !haveHistory {
-        haveHistory = true
-        scrollHeightConstraint.constant = historyHeight
-        divider.isHidden = false
-    }
+    // Insert between the history and the live tail (the finalized segment is
+    // about to disappear from the tail in the next live render).
+    history.textStorage?.replaceCharacters(in: NSRange(location: fixedLength, length: 0), with: chunk)
+    fixedLength += chunk.length
     relayout()
     if stick {
         history.scrollToEndOfDocument(nil)
@@ -351,34 +360,29 @@ func renderLive(_ segments: [Seg]) {
         text.append(mainText(line, alpha: seg.final ? 1.0 : 0.85))
     }
     if text.length == 0 {
-        let placeholder = isIdle ? "idling…" : (haveHistory ? "…" : "listening…")
+        let placeholder = isIdle ? "idling…" : (fixedLength > 0 ? "…" : "listening…")
         text.append(mainText(placeholder, alpha: 0.6))
     }
-    liveLabel.attributedStringValue = text
-    relayout()
+    setTail(text)
 }
 
 // A pipeline problem the user can fix (bad API key) replaces the live area in
 // red until the next live render clears it.
 func renderError(_ message: String) {
-    liveLabel.attributedStringValue = NSAttributedString(string: message, attributes: [
+    setTail(NSAttributedString(string: message, attributes: [
         .foregroundColor: NSColor.systemRed,
         .font: mainFont, .paragraphStyle: mainPara,
-    ])
-    relayout()
+    ]))
 }
 
-// Adopt a user-chosen size: the new width re-wraps text, and the height delta
-// goes to the history viewport; the live area keeps auto-sizing.
+// Adopt a user-chosen size: the new width re-wraps text, and the new height
+// becomes the viewport height and its future auto-grow cap.
 func adoptManualSize() {
     let frame = panel.frame
     panelWidth = frame.width
-    liveLabel.preferredMaxLayoutWidth = panelWidth - 2 * textInset
-    if haveHistory {
-        let chromeAndLive = container.fittingSize.height - scrollHeightConstraint.constant
-        historyHeight = max(80, frame.height - chromeAndLive)
-        scrollHeightConstraint.constant = historyHeight
-    }
+    let chrome = container.fittingSize.height - scrollHeightConstraint.constant
+    historyHeight = max(60, frame.height - chrome)
+    scrollHeightConstraint.constant = historyHeight
     relayout()
 }
 
@@ -697,6 +701,8 @@ NSLayoutConstraint.activate([
     settingsButton.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 10),
     settingsButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 ])
+
+renderLive([]) // seed the "listening…" placeholder
 
 DispatchQueue.global().async {
     while let line = readLine(strippingNewline: true) {

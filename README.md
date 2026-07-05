@@ -68,7 +68,11 @@ top bar) has the settings:
   survive) and shuts everything down.
 
 The subtitle window floats above other apps; drag it to move, drag the corner
-grip to resize, scroll the history independently of the pinned live area.
+grip to resize, scroll back through the history whenever you like. Subtitles
+form one continuous column: the in-progress text sits at the bottom and
+pushes earlier lines up as it grows, and when a sentence is finalized it
+stays exactly where it is — the next live line just starts underneath. The
+window grows with the first few lines, then keeps a stable size.
 Closing the window shuts the whole pipeline down. Finalized lines are also
 echoed to the terminal as a plain transcript.
 
@@ -135,8 +139,8 @@ as audio — the gate only saves money when the Mac is actually silent.
   Audio process tap (macOS 14.4+), wraps it in a private aggregate device,
   converts to 24 kHz mono s16le, and writes raw PCM to stdout.
 - **`helper/subtitlewindow.swift`** — the floating overlay. Reads JSON lines on
-  stdin: `append` messages go into the scrollable timestamped history, `live`
-  messages replace the pinned in-progress area at the bottom.
+  stdin: `append` messages freeze text into the scrollable timestamped
+  history, `live` messages rewrite the in-progress tail of the same column.
 - **The Go pipeline** (`bin/sas`) spawns both helpers and connects them:
   - *realtime client* (`realtime.go`) — streams PCM to the Realtime API
     (`gpt-realtime-whisper`) over a WebSocket. The model streams source-language
