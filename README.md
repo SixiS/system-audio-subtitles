@@ -12,6 +12,10 @@ is still being spoken, then an authoritative one replaces it when the sentence
 completes. Finished lines scroll into a timestamped history above the live
 area.
 
+> **Note:** transcription and translation run through the OpenAI API, so you
+> need your own [OpenAI API key](https://platform.openai.com/account/api-keys)
+> — usage is billed to your OpenAI account (see [Costs](#costs)).
+
 ## Install
 
 Download the latest `SystemAudioSubtitles-x.y.z.dmg` from
@@ -168,8 +172,9 @@ terminals don't have). To get its own prompt, audiotap re-execs itself with
 *disclaimed responsibility* (`posix_spawn` + `POSIX_SPAWN_SETEXEC` +
 `responsibility_spawnattrs_setdisclaim`), becoming its own TCC subject with its
 embedded Info.plist honored. If Apple ever removes that private API, the
-fallback is granting the permission to your terminal manually — or the
-ScreenCaptureKit route described in [PLAN.md](PLAN.md).
+fallback is granting the permission to your terminal manually — or swapping
+the capture helper for a ScreenCaptureKit backend (`SCStream` with
+`capturesAudio`), which honors the same PCM-on-stdout contract.
 
 ## Development
 
@@ -202,7 +207,6 @@ wav.go                       WAV encode/decode helpers
 assets/                      app icon (PNG + .icns) and the script that draws it
 packaging/                   app-bundle Info.plist and entitlements
 scripts/release.sh           builds the universal .app, signs, notarizes, makes the DMG
-PLAN.md                      design decisions, milestones, roadmap
 RELEASING.md                 how releases are cut (Apple Developer setup, make release)
 ```
 
@@ -221,8 +225,8 @@ Issues and PRs welcome. A few ground rules:
 - The capture helper's contract is exactly "24 kHz mono s16le PCM on stdout,
   diagnostics on stderr" — alternative capture backends (e.g. ScreenCaptureKit)
   are welcome as long as they honor it.
-- Roadmap ideas live in [PLAN.md](PLAN.md) — currently: helper auto-restart,
-  SRT export, realtime-session reconnect, and following default-output-device
+- Roadmap ideas welcome — currently on the list: helper auto-restart, SRT
+  export, realtime-session reconnect, and following default-output-device
   changes mid-run.
 
 ## License
