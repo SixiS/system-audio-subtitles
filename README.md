@@ -12,6 +12,8 @@ is still being spoken, then an authoritative one replaces it when the sentence
 completes. Finished lines scroll into a timestamped history above the live
 area.
 
+![The subtitle window floating over a cartoon, translating Spanish dialogue into English](assets/screenshot.png)
+
 > **Note:** transcription and translation run through the OpenAI API, so you
 > need your own [OpenAI API key](https://platform.openai.com/account/api-keys)
 > — usage is billed to your OpenAI account (see [Costs](#costs)).
