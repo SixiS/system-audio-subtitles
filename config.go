@@ -20,10 +20,13 @@ type Prefs struct {
 	SourceLang   string `json:"source_lang"`
 	ShowOriginal bool   `json:"show_original"`
 	NoTranslate  bool   `json:"no_translate"`
-	StreamDelay  string `json:"stream_delay"`
-	WordGapMS    int    `json:"word_gap_ms"`
-	MaxSentences int    `json:"max_sentences"`
-	DockIcon     bool   `json:"dock_icon"`
+	// Nullable so configs saved before this preference existed keep the
+	// built-in default instead of silently reading as "off".
+	RealtimeTranslate *bool  `json:"realtime_translate,omitempty"`
+	StreamDelay       string `json:"stream_delay"`
+	WordGapMS         int    `json:"word_gap_ms"`
+	MaxSentences      int    `json:"max_sentences"`
+	DockIcon          bool   `json:"dock_icon"`
 }
 
 type storedConfig struct {
@@ -129,14 +132,15 @@ func savePrefs(p Prefs) error {
 
 func prefsFromConfig(cfg Config) Prefs {
 	return Prefs{
-		TargetLang:   cfg.TargetLang,
-		SourceLang:   cfg.SourceLang,
-		ShowOriginal: cfg.ShowOriginal,
-		NoTranslate:  cfg.NoTranslate,
-		StreamDelay:  cfg.StreamDelay,
-		WordGapMS:    cfg.WordGapMS,
-		MaxSentences: cfg.MaxSentences,
-		DockIcon:     cfg.DockIcon,
+		TargetLang:        cfg.TargetLang,
+		SourceLang:        cfg.SourceLang,
+		ShowOriginal:      cfg.ShowOriginal,
+		NoTranslate:       cfg.NoTranslate,
+		RealtimeTranslate: &cfg.RealtimeTranslate,
+		StreamDelay:       cfg.StreamDelay,
+		WordGapMS:         cfg.WordGapMS,
+		MaxSentences:      cfg.MaxSentences,
+		DockIcon:          cfg.DockIcon,
 	}
 }
 
@@ -149,6 +153,9 @@ func applyPrefs(cfg *Config, p Prefs) {
 	cfg.SourceLang = p.SourceLang
 	cfg.ShowOriginal = p.ShowOriginal
 	cfg.NoTranslate = p.NoTranslate
+	if p.RealtimeTranslate != nil {
+		cfg.RealtimeTranslate = *p.RealtimeTranslate
+	}
 	if p.StreamDelay != "" {
 		cfg.StreamDelay = p.StreamDelay
 	}

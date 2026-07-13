@@ -34,6 +34,7 @@ struct Prefs: Decodable {
     let source_lang: String
     let show_original: Bool
     let no_translate: Bool
+    let realtime_translate: Bool?
     let stream_delay: String
     let word_gap_ms: Int
     let max_sentences: Int?
@@ -536,7 +537,7 @@ func promptForPrefs() {
     alert.addButton(withTitle: "Cancel")
 
     let rowH: CGFloat = 30
-    let rows: CGFloat = 8
+    let rows: CGFloat = 9
     let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: rows * rowH))
     func rowY(_ row: Int) -> CGFloat { (rows - CGFloat(row) - 1) * rowH + 4 }
     func addLabel(_ text: String, row: Int) {
@@ -544,6 +545,13 @@ func promptForPrefs() {
         label.alignment = .right
         label.frame = NSRect(x: 0, y: rowY(row), width: 150, height: 20)
         accessory.addSubview(label)
+    }
+    func addHint(_ text: String, row: Int, x: CGFloat, width: CGFloat) {
+        let hint = NSTextField(labelWithString: text)
+        hint.textColor = .secondaryLabelColor
+        hint.font = NSFont.systemFont(ofSize: 11)
+        hint.frame = NSRect(x: x, y: rowY(row) + 2, width: width, height: 18)
+        accessory.addSubview(hint)
     }
 
     addLabel("Translate into:", row: 0)
@@ -601,30 +609,32 @@ func promptForPrefs() {
     noTrans.frame = NSRect(x: 160, y: rowY(3), width: 250, height: 22)
     accessory.addSubview(noTrans)
 
-    addLabel("Latency:", row: 4)
-    let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(4) - 3, width: 120, height: 26))
+    let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: nil, action: nil)
+    rtTrans.state = (p.realtime_translate ?? true) ? .on : .off
+    rtTrans.frame = NSRect(x: 160, y: rowY(4), width: 210, height: 22)
+    accessory.addSubview(rtTrans)
+    addHint("~2× cost", row: 4, x: 372, width: 48)
+
+    addLabel("Latency:", row: 5)
+    let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(5) - 3, width: 120, height: 26))
     delayPopup.addItems(withTitles: ["minimal", "low", "medium", "high", "xhigh"])
     delayPopup.selectItem(withTitle: p.stream_delay)
     accessory.addSubview(delayPopup)
 
-    addLabel("Sentence gap (ms):", row: 5)
-    let gapField = NSTextField(frame: NSRect(x: 160, y: rowY(5), width: 70, height: 22))
+    addLabel("Sentence gap (ms):", row: 6)
+    let gapField = NSTextField(frame: NSRect(x: 160, y: rowY(6), width: 70, height: 22))
     gapField.stringValue = String(p.word_gap_ms)
     accessory.addSubview(gapField)
 
-    addLabel("Max sentences:", row: 6)
-    let maxSentField = NSTextField(frame: NSRect(x: 160, y: rowY(6), width: 70, height: 22))
+    addLabel("Max sentences:", row: 7)
+    let maxSentField = NSTextField(frame: NSRect(x: 160, y: rowY(7), width: 70, height: 22))
     maxSentField.stringValue = String(p.max_sentences ?? 3)
     accessory.addSubview(maxSentField)
-    let maxSentHint = NSTextField(labelWithString: "per live segment; 0 = no limit")
-    maxSentHint.textColor = .secondaryLabelColor
-    maxSentHint.font = NSFont.systemFont(ofSize: 11)
-    maxSentHint.frame = NSRect(x: 238, y: rowY(6) + 2, width: 180, height: 18)
-    accessory.addSubview(maxSentHint)
+    addHint("per live segment; 0 = no limit", row: 7, x: 238, width: 180)
 
     let dockIcon = NSButton(checkboxWithTitle: "Show Dock icon", target: nil, action: nil)
     dockIcon.state = (p.dock_icon ?? true) ? .on : .off
-    dockIcon.frame = NSRect(x: 160, y: rowY(7), width: 250, height: 22)
+    dockIcon.frame = NSRect(x: 160, y: rowY(8), width: 250, height: 22)
     accessory.addSubview(dockIcon)
 
     alert.accessoryView = accessory
@@ -640,6 +650,7 @@ func promptForPrefs() {
             "source_lang": source,
             "show_original": showOrig.state == .on,
             "no_translate": noTrans.state == .on,
+            "realtime_translate": rtTrans.state == .on,
             "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,
             "word_gap_ms": Int(gapField.stringValue) ?? p.word_gap_ms,
             "max_sentences": Int(maxSentField.stringValue) ?? (p.max_sentences ?? 3),

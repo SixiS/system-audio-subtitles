@@ -107,7 +107,11 @@ func runStream(ctx context.Context, cfg Config) error {
 		d := make(chan error, 1)
 		updates, streamDone = u, d
 		display.SetIdle(false) // a fresh session starts with the gate open
-		go func() { d <- streamTranscribe(sctx, c, k, s, u) }()
+		stream := streamTranscribe
+		if c.sessionTranslates() {
+			stream = streamTranslate
+		}
+		go func() { d <- stream(sctx, c, k, s, u) }()
 	}
 	startStream(cfg, key, src)
 
@@ -134,7 +138,7 @@ func runStream(ctx context.Context, cfg Config) error {
 	}
 
 	launch := func(st *segState) {
-		if cfg.NoTranslate || st.inflight || st.seg.TransFinal {
+		if cfg.NoTranslate || cfg.sessionTranslates() || st.inflight || st.seg.TransFinal {
 			return
 		}
 		words := len(strings.Fields(st.seg.Source))
@@ -167,13 +171,20 @@ func runStream(ctx context.Context, cfg Config) error {
 			states[u.ItemID] = st
 			order = append(order, u.ItemID)
 		}
-		if u.Text == "" && !u.Final {
+		if u.Text == "" && u.Translation == "" && !u.Final {
 			return // registration only (committed event) — no text yet
 		}
 		st.seg.Source = u.Text
 		st.version++
 		if u.Final {
 			st.seg.SrcFinal = true
+		}
+		if cfg.sessionTranslates() {
+			// The realtime session translates as it goes — its updates carry
+			// both transcripts and there is nothing to launch.
+			st.seg.Translation = u.Translation
+			st.seg.TransFinal = u.Final
+			return
 		}
 		if cfg.NoTranslate {
 			st.seg.Translation = u.Text
@@ -309,7 +320,11 @@ func runStream(ctx context.Context, cfg Config) error {
 					sessionChanged := cfg.SourceLang != before.SourceLang ||
 						cfg.StreamDelay != before.StreamDelay ||
 						cfg.WordGapMS != before.WordGapMS ||
-						cfg.MaxSentences != before.MaxSentences
+						cfg.MaxSentences != before.MaxSentences ||
+						cfg.sessionTranslates() != before.sessionTranslates() ||
+						// In translate mode the target language lives in the
+						// realtime session too, not just in REST calls.
+						(cfg.sessionTranslates() && cfg.TargetLang != before.TargetLang)
 					if sessionChanged && !streamEnded && !waitingForKey {
 						pendingRestart = true
 						sessionCancel()

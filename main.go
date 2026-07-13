@@ -10,20 +10,27 @@ import (
 )
 
 type Config struct {
-	TargetLang   string
-	SourceLang   string
-	Helper       string
-	Input        string
-	Record       string
-	Seconds      int
-	ShowOriginal bool
-	NoTranslate  bool
-	WordGapMS    int
-	MaxSentences int
-	StreamDelay  string
-	DockIcon     bool
-	DebugEvents  bool
+	TargetLang        string
+	SourceLang        string
+	Helper            string
+	Input             string
+	Record            string
+	Seconds           int
+	ShowOriginal      bool
+	NoTranslate       bool
+	RealtimeTranslate bool
+	WordGapMS         int
+	MaxSentences      int
+	StreamDelay       string
+	DockIcon          bool
+	DebugEvents       bool
 }
+
+// sessionTranslates reports whether the realtime session itself produces the
+// translation (--realtime-translate). --no-translate wins over it: combined,
+// the run is plain transcription. This is the one definition of that
+// precedence — check it, not the raw fields.
+func (c Config) sessionTranslates() bool { return c.RealtimeTranslate && !c.NoTranslate }
 
 func main() {
 	var cfg Config
@@ -35,6 +42,7 @@ func main() {
 	flag.IntVar(&cfg.Seconds, "seconds", 5, "duration for --record")
 	flag.BoolVar(&cfg.ShowOriginal, "show-original", true, "also show the untranslated text")
 	flag.BoolVar(&cfg.NoTranslate, "no-translate", false, "transcription only")
+	flag.BoolVar(&cfg.RealtimeTranslate, "realtime-translate", true, "translate speech directly with the gpt-realtime-translate model (one purpose-built interpreter model instead of transcribe-then-translate; ~2x the cost, 13 target languages)")
 	flag.IntVar(&cfg.WordGapMS, "word-gap", 1000, "milliseconds without new transcribed words that ends a segment")
 	flag.IntVar(&cfg.MaxSentences, "max-sentences", 3, "sentences in one live segment before it is force-cut into history (0 = no limit)")
 	flag.StringVar(&cfg.StreamDelay, "stream-delay", "low", "realtime delay/accuracy setting: minimal|low|medium|high|xhigh")
@@ -62,6 +70,9 @@ func main() {
 		}
 		if !set["no-translate"] {
 			cfg.NoTranslate = p.NoTranslate
+		}
+		if !set["realtime-translate"] && p.RealtimeTranslate != nil {
+			cfg.RealtimeTranslate = *p.RealtimeTranslate
 		}
 		if !set["stream-delay"] && p.StreamDelay != "" {
 			cfg.StreamDelay = p.StreamDelay
