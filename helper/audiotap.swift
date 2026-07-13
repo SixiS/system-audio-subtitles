@@ -136,6 +136,84 @@ var aggregateID = AudioObjectID(kAudioObjectUnknown)
 status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &aggregateID)
 if status != noErr { fail(1, "creating aggregate device failed (OSStatus \(status))") }
 
+// --- Locate the tap on the aggregate's input side. When the default output
+// device also has inputs (a Bluetooth headset's microphone, an audio
+// interface), those input streams precede the tap's in the IO proc's buffer
+// list — reading buffer 0 as the tap would stream mic bytes misparsed as
+// float samples (full-scale static). Worse, opening a Bluetooth mic drops
+// the whole headset into the 16 kHz telephony profile. So: find the tap's
+// streams (the tap list is appended after the sub-device's), deactivate
+// every other input stream, and remember where the tap's buffers start.
+let debugLayout = ProcessInfo.processInfo.environment["AUDIOTAP_DEBUG"] != nil
+
+func inputStreamIDs(of deviceID: AudioObjectID) -> [AudioObjectID] {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreams,
+        mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(0)
+    guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr,
+          size > 0 else { return [] }
+    var ids = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown),
+                              count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids
+}
+
+func virtualFormat(of streamID: AudioObjectID) -> AudioStreamBasicDescription? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioStreamPropertyVirtualFormat,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var asbd = AudioStreamBasicDescription()
+    var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+    guard AudioObjectGetPropertyData(streamID, &address, 0, nil, &size, &asbd) == noErr else { return nil }
+    return asbd
+}
+
+// One HAL stream contributes one buffer to the IO proc's list; a
+// non-interleaved stereo tap therefore spans two consecutive buffers.
+let inputStreams = inputStreamIDs(of: aggregateID)
+let tapStreamCount = sourceFormat.isInterleaved ? 1 : Int(sourceFormat.channelCount)
+var tapFirstStream = max(0, inputStreams.count - tapStreamCount)
+if tapFirstStream < inputStreams.count,
+   let f = virtualFormat(of: inputStreams[tapFirstStream]),
+   f.mSampleRate != tapASBD.mSampleRate {
+    // The tap wasn't last after all — fall back to scanning for its rate.
+    for (i, stream) in inputStreams.enumerated() {
+        if let sf = virtualFormat(of: stream), sf.mSampleRate == tapASBD.mSampleRate {
+            tapFirstStream = i
+            break
+        }
+    }
+}
+if debugLayout {
+    for (i, stream) in inputStreams.enumerated() {
+        let f = virtualFormat(of: stream)
+        note("input stream[\(i)] \(Int(f?.mSampleRate ?? 0)) Hz " +
+             "\(f?.mChannelsPerFrame ?? 0)ch\(i == tapFirstStream ? " ← tap" : "")")
+    }
+}
+
+var deactivated = 0
+for i in 0..<tapFirstStream {
+    var inactive = UInt32(0)
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioStreamPropertyIsActive,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    if AudioObjectSetPropertyData(inputStreams[i], &address, 0, nil,
+                                  UInt32(MemoryLayout<UInt32>.size), &inactive) == noErr {
+        deactivated += 1
+    }
+}
+if tapFirstStream > 0 {
+    note("output device has \(tapFirstStream) input stream(s) of its own (mic?); " +
+         "deactivated \(deactivated) so only the tap is captured")
+}
+// Active non-tap buffers still preceding the tap's in the IO proc list.
+let tapBufferOffset = tapFirstStream - deactivated
+
 // --- Converter: tap native format → 16 kHz mono s16le.
 guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                        sampleRate: outputSampleRate,
@@ -205,12 +283,37 @@ func convertAndEmit(_ inputBuffer: AVAudioPCMBuffer) {
     emit(Data(bytes: samples[0], count: sampleCount * MemoryLayout<Int16>.size))
 }
 
+// Reused per callback (IO procs for one device run serially) to hand the
+// converter just the tap's slice of the incoming buffer list.
+let tapBufferList = AudioBufferList.allocate(maximumBuffers: tapStreamCount)
+var debugCallbacksLeft = debugLayout ? 3 : 0
+
 var ioProcID: AudioDeviceIOProcID?
 status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, nil) { _, inInputData, _, _, _ in
-    guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat,
-                                             bufferListNoCopy: inInputData,
-                                             deallocator: nil),
-          inputBuffer.frameLength > 0 else { return }
+    let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+    if debugCallbacksLeft > 0 {
+        debugCallbacksLeft -= 1
+        let layout = abl.map { "\($0.mNumberChannels)ch/\($0.mDataByteSize)B" }.joined(separator: " ")
+        note("io buffers: [\(layout)] tap at \(tapBufferOffset)..<\(tapBufferOffset + tapStreamCount)")
+    }
+    var inputBuffer: AVAudioPCMBuffer?
+    if abl.count == tapStreamCount {
+        // Only the tap made it into the IO proc — the common case.
+        inputBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat,
+                                       bufferListNoCopy: inInputData,
+                                       deallocator: nil)
+    } else if tapBufferOffset >= 0, tapBufferOffset + tapStreamCount <= abl.count {
+        // Extra input streams (device mic) survived — carve out the tap's
+        // buffers only. Dropping a frame on a layout surprise beats streaming
+        // misparsed bytes as audio.
+        for j in 0..<tapStreamCount {
+            tapBufferList[j] = abl[tapBufferOffset + j]
+        }
+        inputBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat,
+                                       bufferListNoCopy: tapBufferList.unsafeMutablePointer,
+                                       deallocator: nil)
+    }
+    guard let inputBuffer, inputBuffer.frameLength > 0 else { return }
     convertAndEmit(inputBuffer)
 }
 if status != noErr || ioProcID == nil { fail(1, "installing IO proc failed (OSStatus \(status))") }
