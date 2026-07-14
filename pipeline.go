@@ -106,7 +106,8 @@ func runStream(ctx context.Context, cfg Config) error {
 		u := make(chan SegmentUpdate, 64)
 		d := make(chan error, 1)
 		updates, streamDone = u, d
-		display.SetIdle(false) // a fresh session starts with the gate open
+		display.SetIdle(false)  // a fresh session starts with the gate open
+		display.SetReady(false) // "connecting…" until the session answers
 		stream := streamTranscribe
 		if c.sessionTranslates() {
 			stream = streamTranslate
@@ -368,6 +369,10 @@ func runStream(ctx context.Context, cfg Config) error {
 		case u, ok := <-updates:
 			if !ok {
 				updates = nil
+				continue
+			}
+			if u.Ready {
+				display.SetReady(true)
 				continue
 			}
 			if u.IdleGate != nil {

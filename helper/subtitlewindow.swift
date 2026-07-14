@@ -50,6 +50,7 @@ struct Msg: Decodable {
     let message: String?
     let prefs: Prefs?
     let idle: Bool?
+    let ready: Bool?
 }
 
 // The pipeline pushes its live settings ("prefs" messages) so the Preferences
@@ -59,6 +60,7 @@ var currentPrefs: Prefs?
 // Idle-gate state ("status" messages): while the pipeline isn't streaming
 // audio because nothing is playing, an empty live area says "idling…".
 var isIdle = false
+var isConnecting = true // until the pipeline reports the realtime session is up
 var lastSegments: [Seg] = []
 
 let app = NSApplication.shared
@@ -361,7 +363,8 @@ func renderLive(_ segments: [Seg]) {
         text.append(mainText(line, alpha: seg.final ? 1.0 : 0.85))
     }
     if text.length == 0 {
-        let placeholder = isIdle ? "idling…" : (fixedLength > 0 ? "…" : "listening…")
+        let placeholder = isConnecting ? "connecting…"
+            : (isIdle ? "idling…" : (fixedLength > 0 ? "…" : "listening…"))
         text.append(mainText(placeholder, alpha: 0.6))
     }
     setTail(text)
@@ -528,6 +531,20 @@ func promptForKey(firstBoot: Bool) {
     }
 }
 
+// "Show original text" needs the transcription pipeline; the realtime
+// translation model doesn't produce the source text, so the checkbox greys
+// out (off) while realtime is on and comes back on — its default — when
+// realtime is turned off.
+final class RealtimeToggle: NSObject {
+    weak var showOrig: NSButton?
+    @objc func toggled(_ sender: NSButton) {
+        let realtimeOn = sender.state == .on
+        showOrig?.isEnabled = !realtimeOn
+        showOrig?.state = realtimeOn ? .off : .on
+    }
+}
+let realtimeToggle = RealtimeToggle()
+
 func promptForPrefs() {
     guard let p = currentPrefs else { return }
     let alert = NSAlert()
@@ -609,11 +626,16 @@ func promptForPrefs() {
     noTrans.frame = NSRect(x: 160, y: rowY(3), width: 250, height: 22)
     accessory.addSubview(noTrans)
 
-    let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: nil, action: nil)
+    let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: realtimeToggle, action: #selector(RealtimeToggle.toggled(_:)))
     rtTrans.state = (p.realtime_translate ?? true) ? .on : .off
     rtTrans.frame = NSRect(x: 160, y: rowY(4), width: 210, height: 22)
     accessory.addSubview(rtTrans)
     addHint("~2× cost", row: 4, x: 372, width: 48)
+    realtimeToggle.showOrig = showOrig
+    if rtTrans.state == .on { // realtime mode has no original text to show
+        showOrig.isEnabled = false
+        showOrig.state = .off
+    }
 
     addLabel("Latency:", row: 5)
     let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(5) - 3, width: 120, height: 26))
@@ -648,7 +670,10 @@ func promptForPrefs() {
         sendToPipeline(["type": "set_prefs", "prefs": [
             "target_lang": target,
             "source_lang": source,
-            "show_original": showOrig.state == .on,
+            // While realtime is on the box is greyed out — store true so
+            // show-original is back to its default if realtime is later
+            // turned off.
+            "show_original": rtTrans.state == .on || showOrig.state == .on,
             "no_translate": noTrans.state == .on,
             "realtime_translate": rtTrans.state == .on,
             "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,
@@ -727,7 +752,8 @@ DispatchQueue.global().async {
                 lastSegments = msg.segments ?? []
                 renderLive(lastSegments)
             case "status":
-                isIdle = msg.idle ?? false
+                if let idle = msg.idle { isIdle = idle }
+                if let ready = msg.ready { isConnecting = !ready }
                 renderLive(lastSegments)
             case "need_key":
                 promptForKey(firstBoot: true)

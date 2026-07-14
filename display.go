@@ -108,6 +108,13 @@ func (w *display) SetIdle(idle bool) {
 	w.sendJSON(map[string]any{"type": "status", "idle": idle})
 }
 
+// SetReady tells the window whether the realtime session is up: until then
+// an empty live area reads "connecting…" rather than "listening…", so a
+// slow or hung connection is visible instead of looking like deaf capture.
+func (w *display) SetReady(ready bool) {
+	w.sendJSON(map[string]any{"type": "status", "ready": ready})
+}
+
 // SendPrefs tells the window the current settings so its Preferences dialog
 // opens with the live values.
 func (w *display) SendPrefs(cfg Config) {

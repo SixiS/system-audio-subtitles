@@ -8,10 +8,10 @@ Live subtitles for whatever your Mac is playing, in a floating native window.
 Captures system audio natively (no BlackHole, no ffmpeg) and streams it to
 the OpenAI Realtime API — by default to `gpt-realtime-translate`, a model
 purpose-built for live interpretation that emits translated text while the
-sentence is still unfolding, alongside a transcript of the original. (A
-transcribe-then-translate mode using `gpt-realtime-whisper` + `gpt-4o-mini`
-is available too.) Finished lines scroll into a timestamped history above
-the live area.
+sentence is still unfolding. (A transcribe-then-translate mode using
+`gpt-realtime-whisper` + `gpt-4o-mini` is available too, and can show the
+original text alongside the translation.) Finished lines scroll into a
+timestamped history above the live area.
 
 ![The subtitle window floating over a cartoon, translating Spanish dialogue into English](assets/screenshot.png)
 
@@ -92,16 +92,18 @@ echoed to the terminal as a plain transcript.
 --target-lang en      language to translate into (default: en)
 --source-lang ""      optional source-language hint (ISO 639-1); auto-detect if empty
 --show-original       show the untranslated text above each subtitle
-                      (default: on; disable with --show-original=false)
+                      (default: on; disable with --show-original=false;
+                      transcribe-then-translate mode only — the realtime
+                      translation model doesn't produce the original text)
 --no-translate        transcription only
 --realtime-translate  translate speech directly with one purpose-built
                       interpreter model (gpt-realtime-translate) instead of
                       transcribing and then translating. Lower latency and
                       built for interpretation, at ~2x the cost (see Costs);
                       13 target languages; the source language is always
-                      auto-detected, so --source-lang and --stream-delay
-                      don't apply (default: on; disable with
-                      --realtime-translate=false)
+                      auto-detected, so --source-lang, --stream-delay, and
+                      --show-original don't apply (default: on; disable
+                      with --realtime-translate=false)
 --stream-delay low    realtime latency/accuracy trade-off: minimal|low|medium|high|xhigh
 --word-gap 1000       milliseconds without new transcribed words that ends a segment
 --max-sentences 3     force-cut a live segment into history after this many
@@ -137,9 +139,11 @@ Rough numbers, at OpenAI's published pricing as of July 2026:
 
 Realtime translation is the default, so an hour of continuous
 foreign-language audio costs about **$2.04** — one purpose-built interpreter
-model does everything. Switching it off (`--realtime-translate=false`) uses
-the transcribe-then-translate rows instead, about **$1.10** an hour, at the
-price of higher latency and less interpretation-aware phrasing.
+model does everything, and that flat rate is the whole bill (no transcription
+add-on is requested, which is also why show-original isn't available in this
+mode). Switching it off (`--realtime-translate=false`) uses the
+transcribe-then-translate rows instead, about **$1.10** an hour, at the price
+of higher latency and less interpretation-aware phrasing.
 
 Either way, an hour left open in silence costs about **a fifth of a cent**
 — the idle gate works the same in both modes. Only audio that
@@ -175,11 +179,12 @@ as audio — the gate only saves money when the Mac is actually silent.
     order across segments does not).
   - with `--realtime-translate` it connects to the translation endpoint
     instead: `gpt-realtime-translate` — a model trained on professional
-    interpreter audio — streams back both a source transcript and translated
-    text itself, and the translation manager below is bypassed entirely. That
-    stream has no segment structure, so subtitles are cut client-side: when
-    the translation closes a sentence and the transcripts go quiet for
-    `--word-gap` (plus the same `--max-sentences` force-cut).
+    interpreter audio — streams translated text directly, and the translation
+    manager below is bypassed entirely. The source transcript would be a
+    separately billed add-on, so it is never requested (show-original greys
+    out in this mode). The stream has no segment structure, so subtitles are
+    cut client-side: when the translation closes a sentence and then goes
+    quiet for `--word-gap` (plus the same `--max-sentences` force-cut).
   - *translation manager* (`pipeline.go`) — races provisional fragment
     translations (every couple of new words, via `gpt-4o-mini`) against the
     authoritative full-sentence translation requested when the segment
