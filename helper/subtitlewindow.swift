@@ -531,20 +531,6 @@ func promptForKey(firstBoot: Bool) {
     }
 }
 
-// "Show original text" needs the transcription pipeline; the realtime
-// translation model doesn't produce the source text, so the checkbox greys
-// out (off) while realtime is on and comes back on — its default — when
-// realtime is turned off.
-final class RealtimeToggle: NSObject {
-    weak var showOrig: NSButton?
-    @objc func toggled(_ sender: NSButton) {
-        let realtimeOn = sender.state == .on
-        showOrig?.isEnabled = !realtimeOn
-        showOrig?.state = realtimeOn ? .off : .on
-    }
-}
-let realtimeToggle = RealtimeToggle()
-
 func promptForPrefs() {
     guard let p = currentPrefs else { return }
     let alert = NSAlert()
@@ -626,16 +612,11 @@ func promptForPrefs() {
     noTrans.frame = NSRect(x: 160, y: rowY(3), width: 250, height: 22)
     accessory.addSubview(noTrans)
 
-    let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: realtimeToggle, action: #selector(RealtimeToggle.toggled(_:)))
+    let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: nil, action: nil)
     rtTrans.state = (p.realtime_translate ?? true) ? .on : .off
     rtTrans.frame = NSRect(x: 160, y: rowY(4), width: 210, height: 22)
     accessory.addSubview(rtTrans)
     addHint("~2× cost", row: 4, x: 372, width: 48)
-    realtimeToggle.showOrig = showOrig
-    if rtTrans.state == .on { // realtime mode has no original text to show
-        showOrig.isEnabled = false
-        showOrig.state = .off
-    }
 
     addLabel("Latency:", row: 5)
     let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(5) - 3, width: 120, height: 26))
@@ -670,10 +651,7 @@ func promptForPrefs() {
         sendToPipeline(["type": "set_prefs", "prefs": [
             "target_lang": target,
             "source_lang": source,
-            // While realtime is on the box is greyed out — store true so
-            // show-original is back to its default if realtime is later
-            // turned off.
-            "show_original": rtTrans.state == .on || showOrig.state == .on,
+            "show_original": showOrig.state == .on,
             "no_translate": noTrans.state == .on,
             "realtime_translate": rtTrans.state == .on,
             "stream_delay": delayPopup.titleOfSelectedItem ?? p.stream_delay,

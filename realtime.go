@@ -504,10 +504,10 @@ func streamAudio(ctx context.Context, cfg Config, conn *websocket.Conn, src io.R
 // streamTranslate pipes PCM to the Realtime translation API
 // (gpt-realtime-translate): one purpose-built interpreter model consumes
 // speech and streams back translated text — the gpt-4o-mini translation
-// pipeline is not involved at all. Show-original is unavailable in this mode
-// by design: the source text would need the input-transcription add-on,
-// which bills gpt-realtime-whisper on top of the translation rate, so it is
-// never requested and the mode costs a flat $0.034/min. The stream has no
+// pipeline is not involved at all. When show-original is on, the
+// input-transcription add-on rides along to supply the source text (billing
+// gpt-realtime-whisper on top of the translation rate); with it off the mode
+// costs a flat $0.034/min. The stream has no
 // segment structure (no item ids, no completed events, translated speech
 // audio we ignore), so subtitles are cut client-side: a segment finalizes
 // once the translation ends a sentence and no transcript delta has arrived
@@ -525,13 +525,15 @@ func streamTranslate(ctx context.Context, cfg Config, key string, src io.Reader,
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 
+	audio := map[string]any{
+		"output": map[string]any{"language": cfg.TargetLang},
+	}
+	if cfg.ShowOriginal {
+		audio["input"] = map[string]any{"transcription": map[string]any{"model": realtimeModel}}
+	}
 	if err := writeJSON(ctx, conn, map[string]any{
 		"type": "session.update",
-		"session": map[string]any{
-			"audio": map[string]any{
-				"output": map[string]any{"language": cfg.TargetLang},
-			},
-		},
+		"session": map[string]any{"audio": audio},
 	}); err != nil {
 		return fmt.Errorf("configuring translation session: %w", err)
 	}
@@ -545,20 +547,20 @@ func streamTranslate(ctx context.Context, cfg Config, key string, src io.Reader,
 	reads := readLoop(ctx, conn)
 
 	wordGap := time.Duration(cfg.WordGapMS) * time.Millisecond
-	trans := ""
+	source, trans := "", ""
 	segN, segID := 0, "xl-0"
 	var lastDelta time.Time
 	var drainTimer <-chan time.Time
 
 	emit := func(final bool) {
-		if trans == "" {
+		if source == "" && trans == "" {
 			return
 		}
-		sendUpdate(ctx, updates, SegmentUpdate{ItemID: segID, Translation: trans, Final: final})
+		sendUpdate(ctx, updates, SegmentUpdate{ItemID: segID, Text: source, Translation: trans, Final: final})
 		if final {
 			segN++
 			segID = fmt.Sprintf("xl-%d", segN)
-			trans = ""
+			source, trans = "", ""
 		}
 	}
 
@@ -614,6 +616,10 @@ func streamTranslate(ctx context.Context, cfg Config, key string, src io.Reader,
 			switch ev.Type {
 			case "session.created":
 				sendUpdate(ctx, updates, SegmentUpdate{Ready: true})
+			case "session.input_transcript.delta":
+				source += ev.Delta
+				lastDelta = time.Now()
+				emit(false)
 			case "session.output_transcript.delta":
 				trans += ev.Delta
 				lastDelta = time.Now()
@@ -631,7 +637,7 @@ func streamTranslate(ctx context.Context, cfg Config, key string, src io.Reader,
 				return realtimeAPIError("realtime translation API", f.data, msg)
 			}
 		case <-tick.C:
-			if trans == "" {
+			if source == "" && trans == "" {
 				continue
 			}
 			// A finished sentence plus a word gap of quiet is a subtitle;

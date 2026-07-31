@@ -40,7 +40,7 @@ func main() {
 	flag.StringVar(&cfg.Input, "input", "", "dev mode: read a 24 kHz mono s16 WAV file instead of live capture")
 	flag.StringVar(&cfg.Record, "record", "", "capture system audio to this WAV file and exit")
 	flag.IntVar(&cfg.Seconds, "seconds", 5, "duration for --record")
-	flag.BoolVar(&cfg.ShowOriginal, "show-original", true, "also show the untranslated text")
+	flag.BoolVar(&cfg.ShowOriginal, "show-original", false, "also show the untranslated text")
 	flag.BoolVar(&cfg.NoTranslate, "no-translate", false, "transcription only")
 	flag.BoolVar(&cfg.RealtimeTranslate, "realtime-translate", true, "translate speech directly with the gpt-realtime-translate model (one purpose-built interpreter model instead of transcribe-then-translate; ~2x the cost, 13 target languages)")
 	flag.IntVar(&cfg.WordGapMS, "word-gap", 1000, "milliseconds without new transcribed words that ends a segment")

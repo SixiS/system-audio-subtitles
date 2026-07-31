@@ -323,9 +323,11 @@ func runStream(ctx context.Context, cfg Config) error {
 						cfg.WordGapMS != before.WordGapMS ||
 						cfg.MaxSentences != before.MaxSentences ||
 						cfg.sessionTranslates() != before.sessionTranslates() ||
-						// In translate mode the target language lives in the
+						// In translate mode the target language and the
+						// show-original transcription add-on live in the
 						// realtime session too, not just in REST calls.
-						(cfg.sessionTranslates() && cfg.TargetLang != before.TargetLang)
+						(cfg.sessionTranslates() && (cfg.TargetLang != before.TargetLang ||
+							cfg.ShowOriginal != before.ShowOriginal))
 					if sessionChanged && !streamEnded && !waitingForKey {
 						pendingRestart = true
 						sessionCancel()
