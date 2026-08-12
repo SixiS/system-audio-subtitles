@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import Foundation
 
 // subtitle-window: a floating subtitle overlay. Reads one JSON message per
@@ -32,6 +33,7 @@ struct Seg: Decodable {
 struct Prefs: Decodable {
     let target_lang: String
     let source_lang: String
+    let capture_device: String?
     let show_original: Bool
     let no_translate: Bool
     let realtime_translate: Bool?
@@ -531,6 +533,53 @@ func promptForKey(firstBoot: Bool) {
     }
 }
 
+// outputDevices enumerates output-capable audio devices (uid + display name)
+// for the capture-device picker. Fresh on every dialog open, so newly plugged
+// headphones show up without a restart.
+func outputDevices() -> [(uid: String, name: String)] {
+    func stringProp(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(id, &address, 0, nil, &size, $0)
+        }
+        return status == noErr ? value as String : nil
+    }
+    func outputChannels(_ id: AudioObjectID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, raw) == noErr else { return 0 }
+        let abl = raw.assumingMemoryBound(to: AudioBufferList.self)
+        return UnsafeMutableAudioBufferListPointer(abl).reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(0)
+    guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+    var ids = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown),
+                              count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                     &address, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids.filter { outputChannels($0) > 0 }.compactMap { id in
+        guard let uid = stringProp(id, kAudioDevicePropertyDeviceUID) else { return nil }
+        return (uid: uid, name: stringProp(id, kAudioObjectPropertyName) ?? uid)
+    }
+}
+
 func promptForPrefs() {
     guard let p = currentPrefs else { return }
     let alert = NSAlert()
@@ -540,24 +589,51 @@ func promptForPrefs() {
     alert.addButton(withTitle: "Cancel")
 
     let rowH: CGFloat = 30
-    let rows: CGFloat = 9
+    let rows: CGFloat = 10 // keep in sync with the number of nextRow() blocks below
     let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: rows * rowH))
-    func rowY(_ row: Int) -> CGFloat { (rows - CGFloat(row) - 1) * rowH + 4 }
-    func addLabel(_ text: String, row: Int) {
+    // Rows are laid out top-down by calling nextRow() once per row — inserting
+    // a row is purely additive (plus the count above), no renumbering.
+    var row = -1
+    func nextRow() -> CGFloat {
+        row += 1
+        return (rows - CGFloat(row) - 1) * rowH + 4
+    }
+    func addLabel(_ text: String, y: CGFloat) {
         let label = NSTextField(labelWithString: text)
         label.alignment = .right
-        label.frame = NSRect(x: 0, y: rowY(row), width: 150, height: 20)
+        label.frame = NSRect(x: 0, y: y, width: 150, height: 20)
         accessory.addSubview(label)
     }
-    func addHint(_ text: String, row: Int, x: CGFloat, width: CGFloat) {
+    func addHint(_ text: String, y: CGFloat, x: CGFloat, width: CGFloat) {
         let hint = NSTextField(labelWithString: text)
         hint.textColor = .secondaryLabelColor
         hint.font = NSFont.systemFont(ofSize: 11)
-        hint.frame = NSRect(x: x, y: rowY(row) + 2, width: width, height: 18)
+        hint.frame = NSRect(x: x, y: y + 2, width: width, height: 18)
         accessory.addSubview(hint)
     }
 
-    addLabel("Translate into:", row: 0)
+    let deviceY = nextRow()
+    addLabel("Capture audio from:", y: deviceY)
+    let devicePopup = NSPopUpButton(frame: NSRect(x: 158, y: deviceY - 3, width: 250, height: 26))
+    var deviceUIDs: [String] = [""] // first item: follow the system default output
+    devicePopup.addItem(withTitle: "Default output device")
+    for d in outputDevices() {
+        devicePopup.addItem(withTitle: d.name)
+        deviceUIDs.append(d.uid)
+    }
+    let storedDevice = p.capture_device ?? ""
+    if let idx = deviceUIDs.firstIndex(of: storedDevice) {
+        devicePopup.selectItem(at: idx)
+    } else {
+        // A stored device that is currently unplugged stays selectable.
+        devicePopup.addItem(withTitle: storedDevice)
+        deviceUIDs.append(storedDevice)
+        devicePopup.selectItem(at: deviceUIDs.count - 1)
+    }
+    accessory.addSubview(devicePopup)
+
+    let targetY = nextRow()
+    addLabel("Translate into:", y: targetY)
     let languages: [(code: String, name: String)] = [
         ("en", "English"), ("af", "Afrikaans"), ("ar", "Arabic"), ("zh", "Chinese"),
         ("cs", "Czech"), ("da", "Danish"), ("nl", "Dutch"), ("fi", "Finnish"),
@@ -568,7 +644,7 @@ func promptForPrefs() {
         ("sv", "Swedish"), ("th", "Thai"), ("tr", "Turkish"), ("uk", "Ukrainian"),
         ("vi", "Vietnamese"),
     ]
-    let targetPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(0) - 3, width: 170, height: 26))
+    let targetPopup = NSPopUpButton(frame: NSRect(x: 158, y: targetY - 3, width: 170, height: 26))
     var targetCodes: [String] = []
     for (code, name) in languages {
         targetPopup.addItem(withTitle: "\(name) (\(code))")
@@ -584,8 +660,9 @@ func promptForPrefs() {
     }
     accessory.addSubview(targetPopup)
 
-    addLabel("Source language:", row: 1)
-    let sourcePopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(1) - 3, width: 170, height: 26))
+    let sourceY = nextRow()
+    addLabel("Source language:", y: sourceY)
+    let sourcePopup = NSPopUpButton(frame: NSRect(x: 158, y: sourceY - 3, width: 170, height: 26))
     var sourceCodes: [String] = [""] // first item: auto-detect
     sourcePopup.addItem(withTitle: "Auto-detect")
     for (code, name) in languages {
@@ -604,40 +681,44 @@ func promptForPrefs() {
 
     let showOrig = NSButton(checkboxWithTitle: "Show original text", target: nil, action: nil)
     showOrig.state = p.show_original ? .on : .off
-    showOrig.frame = NSRect(x: 160, y: rowY(2), width: 250, height: 22)
+    showOrig.frame = NSRect(x: 160, y: nextRow(), width: 250, height: 22)
     accessory.addSubview(showOrig)
 
     let noTrans = NSButton(checkboxWithTitle: "Transcription only (no translation)", target: nil, action: nil)
     noTrans.state = p.no_translate ? .on : .off
-    noTrans.frame = NSRect(x: 160, y: rowY(3), width: 250, height: 22)
+    noTrans.frame = NSRect(x: 160, y: nextRow(), width: 250, height: 22)
     accessory.addSubview(noTrans)
 
     let rtTrans = NSButton(checkboxWithTitle: "Realtime translation model", target: nil, action: nil)
     rtTrans.state = (p.realtime_translate ?? true) ? .on : .off
-    rtTrans.frame = NSRect(x: 160, y: rowY(4), width: 210, height: 22)
+    let rtY = nextRow()
+    rtTrans.frame = NSRect(x: 160, y: rtY, width: 210, height: 22)
     accessory.addSubview(rtTrans)
-    addHint("~2× cost", row: 4, x: 372, width: 48)
+    addHint("~2× cost", y: rtY, x: 372, width: 48)
 
-    addLabel("Latency:", row: 5)
-    let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: rowY(5) - 3, width: 120, height: 26))
+    let delayY = nextRow()
+    addLabel("Latency:", y: delayY)
+    let delayPopup = NSPopUpButton(frame: NSRect(x: 158, y: delayY - 3, width: 120, height: 26))
     delayPopup.addItems(withTitles: ["minimal", "low", "medium", "high", "xhigh"])
     delayPopup.selectItem(withTitle: p.stream_delay)
     accessory.addSubview(delayPopup)
 
-    addLabel("Sentence gap (ms):", row: 6)
-    let gapField = NSTextField(frame: NSRect(x: 160, y: rowY(6), width: 70, height: 22))
+    let gapY = nextRow()
+    addLabel("Sentence gap (ms):", y: gapY)
+    let gapField = NSTextField(frame: NSRect(x: 160, y: gapY, width: 70, height: 22))
     gapField.stringValue = String(p.word_gap_ms)
     accessory.addSubview(gapField)
 
-    addLabel("Max sentences:", row: 7)
-    let maxSentField = NSTextField(frame: NSRect(x: 160, y: rowY(7), width: 70, height: 22))
+    let maxSentY = nextRow()
+    addLabel("Max sentences:", y: maxSentY)
+    let maxSentField = NSTextField(frame: NSRect(x: 160, y: maxSentY, width: 70, height: 22))
     maxSentField.stringValue = String(p.max_sentences ?? 3)
     accessory.addSubview(maxSentField)
-    addHint("per live segment; 0 = no limit", row: 7, x: 238, width: 180)
+    addHint("per live segment; 0 = no limit", y: maxSentY, x: 238, width: 180)
 
     let dockIcon = NSButton(checkboxWithTitle: "Show Dock icon", target: nil, action: nil)
     dockIcon.state = (p.dock_icon ?? true) ? .on : .off
-    dockIcon.frame = NSRect(x: 160, y: rowY(8), width: 250, height: 22)
+    dockIcon.frame = NSRect(x: 160, y: nextRow(), width: 250, height: 22)
     accessory.addSubview(dockIcon)
 
     alert.accessoryView = accessory
@@ -648,9 +729,12 @@ func promptForPrefs() {
         let target = (tIdx >= 0 && tIdx < targetCodes.count) ? targetCodes[tIdx] : "en"
         let sIdx = sourcePopup.indexOfSelectedItem
         let source = (sIdx >= 0 && sIdx < sourceCodes.count) ? sourceCodes[sIdx] : ""
+        let dIdx = devicePopup.indexOfSelectedItem
+        let device = (dIdx >= 0 && dIdx < deviceUIDs.count) ? deviceUIDs[dIdx] : ""
         sendToPipeline(["type": "set_prefs", "prefs": [
             "target_lang": target,
             "source_lang": source,
+            "capture_device": device,
             "show_original": showOrig.state == .on,
             "no_translate": noTrans.state == .on,
             "realtime_translate": rtTrans.state == .on,

@@ -16,10 +16,12 @@ import (
 // Prefs mirrors the tunable subset of Config that the window's Preferences
 // dialog edits. The JSON shape is shared with the window app.
 type Prefs struct {
-	TargetLang   string `json:"target_lang"`
-	SourceLang   string `json:"source_lang"`
-	ShowOriginal bool   `json:"show_original"`
-	NoTranslate  bool   `json:"no_translate"`
+	TargetLang string `json:"target_lang"`
+	SourceLang string `json:"source_lang"`
+	// Output-device UID to capture from; "" = the system default output.
+	CaptureDevice string `json:"capture_device,omitempty"`
+	ShowOriginal  bool   `json:"show_original"`
+	NoTranslate   bool   `json:"no_translate"`
 	// Nullable so configs saved before this preference existed keep the
 	// built-in default instead of silently reading as "off".
 	RealtimeTranslate *bool  `json:"realtime_translate,omitempty"`
@@ -134,6 +136,7 @@ func prefsFromConfig(cfg Config) Prefs {
 	return Prefs{
 		TargetLang:        cfg.TargetLang,
 		SourceLang:        cfg.SourceLang,
+		CaptureDevice:     cfg.CaptureDevice,
 		ShowOriginal:      cfg.ShowOriginal,
 		NoTranslate:       cfg.NoTranslate,
 		RealtimeTranslate: &cfg.RealtimeTranslate,
@@ -151,6 +154,7 @@ func applyPrefs(cfg *Config, p Prefs) {
 		cfg.TargetLang = p.TargetLang
 	}
 	cfg.SourceLang = p.SourceLang
+	cfg.CaptureDevice = p.CaptureDevice
 	cfg.ShowOriginal = p.ShowOriginal
 	cfg.NoTranslate = p.NoTranslate
 	if p.RealtimeTranslate != nil {

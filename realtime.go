@@ -532,7 +532,7 @@ func streamTranslate(ctx context.Context, cfg Config, key string, src io.Reader,
 		audio["input"] = map[string]any{"transcription": map[string]any{"model": realtimeModel}}
 	}
 	if err := writeJSON(ctx, conn, map[string]any{
-		"type": "session.update",
+		"type":    "session.update",
 		"session": map[string]any{"audio": audio},
 	}); err != nil {
 		return fmt.Errorf("configuring translation session: %w", err)

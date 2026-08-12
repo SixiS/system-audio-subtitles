@@ -65,11 +65,13 @@ On first run:
 While running, a **captions icon in the menu bar** (and a gear in the window's
 top bar) has the settings:
 
-- *Preferences…* — target/source language, show-original, transcription-only,
-  realtime translation, latency, sentence gap, max sentences per segment, and
-  Dock icon. Saved
+- *Preferences…* — capture device, target/source language, show-original,
+  transcription-only, realtime translation, latency, sentence gap, max
+  sentences per segment, and Dock icon. Saved
   changes apply immediately (session-level settings restart the live session)
-  and persist in the config file.
+  and persist in the config file. The capture device defaults to the system
+  default output; pick a specific one (headphones, an interface) if capture
+  ends up on the wrong device.
 - *Edit API Key…* — applies immediately; a broken key shows a red error in the
   window until it's fixed.
 - *Clear API Key & Quit* — deletes the key from the keychain (preferences
@@ -91,6 +93,9 @@ echoed to the terminal as a plain transcript.
 
 --target-lang en      language to translate into (default: en)
 --source-lang ""      optional source-language hint (ISO 639-1); auto-detect if empty
+--capture-device ""   output device UID to capture from (default: the system
+                      default output device); list UIDs with --list-devices
+--list-devices        print output devices as "uid<TAB>name" lines and exit
 --show-original       also show the untranslated text above each subtitle
                       (default: off; in realtime-translate mode this adds
                       the transcription add-on to the bill — see Costs)

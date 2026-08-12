@@ -26,6 +26,26 @@ func defaultHelper() string {
 	return "bin/audiotap"
 }
 
+// helperArgs builds the audiotap argument list from the config.
+func helperArgs(cfg Config) []string {
+	if cfg.CaptureDevice != "" {
+		return []string{"--device", cfg.CaptureDevice}
+	}
+	return nil
+}
+
+// printDevices asks the helper for the output-device list (--list-devices)
+// and copies it to stdout: one "uid\tname" line per device.
+func printDevices(helperPath string) error {
+	cmd := exec.Command(helperPath, "--list-devices")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running %s --list-devices: %w (run `make` first?)", helperPath, err)
+	}
+	return nil
+}
+
 // openPCMSource returns a stream of 24 kHz mono s16le PCM: either the audiotap
 // helper's stdout (live capture) or the data chunk of a WAV file (--input).
 func openPCMSource(ctx context.Context, cfg Config) (io.Reader, func(), error) {
@@ -42,7 +62,7 @@ func openPCMSource(ctx context.Context, cfg Config) (io.Reader, func(), error) {
 		return r, func() { f.Close() }, nil
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.Helper)
+	cmd := exec.CommandContext(ctx, cfg.Helper, helperArgs(cfg)...)
 	cmd.Stderr = os.Stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	stdout, err := cmd.StdoutPipe()
@@ -68,15 +88,16 @@ func openPCMSource(ctx context.Context, cfg Config) (io.Reader, func(), error) {
 
 // recordWAV is the milestone-1 diagnostic mode: record N seconds and report
 // peak/RMS so the capture path can be verified without touching the API.
-func recordWAV(helperPath, outPath string, seconds int) error {
-	cmd := exec.Command(helperPath)
+func recordWAV(cfg Config) error {
+	outPath, seconds := cfg.Record, cfg.Seconds
+	cmd := exec.Command(cfg.Helper, helperArgs(cfg)...)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting %s: %w (run `make` first?)", helperPath, err)
+		return fmt.Errorf("starting %s: %w (run `make` first?)", cfg.Helper, err)
 	}
 
 	fmt.Fprintf(os.Stderr, "sas: recording %d s of system audio...\n", seconds)

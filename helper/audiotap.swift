@@ -23,6 +23,20 @@ func fail(_ code: Int32, _ message: String) -> Never {
     exit(code)
 }
 
+func stringProperty(of objectID: AudioObjectID, selector: AudioObjectPropertySelector) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: CFString = "" as CFString
+    var size = UInt32(MemoryLayout<CFString>.size)
+    let status = withUnsafeMutablePointer(to: &value) {
+        AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, $0)
+    }
+    guard status == noErr else { return nil }
+    return value as String
+}
+
 func defaultOutputDeviceUID() -> String? {
     var address = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -33,15 +47,63 @@ func defaultOutputDeviceUID() -> String? {
     guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
                                      &address, 0, nil, &size, &deviceID) == noErr,
           deviceID != AudioObjectID(kAudioObjectUnknown) else { return nil }
+    return stringProperty(of: deviceID, selector: kAudioDevicePropertyDeviceUID)
+}
 
-    address.mSelector = kAudioDevicePropertyDeviceUID
-    var uid: CFString = "" as CFString
-    size = UInt32(MemoryLayout<CFString>.size)
-    let status = withUnsafeMutablePointer(to: &uid) {
-        AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, $0)
+func allDeviceIDs() -> [AudioObjectID] {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(0)
+    guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+    var ids = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown),
+                              count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                     &address, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids
+}
+
+func outputCapableDeviceIDs() -> [AudioObjectID] {
+    allDeviceIDs().filter { outputChannelCount(of: $0) > 0 }
+}
+
+func outputChannelCount(of deviceID: AudioObjectID) -> Int {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioObjectPropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(0)
+    guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
+    let ablPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { ablPointer.deallocate() }
+    guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, ablPointer) == noErr else { return 0 }
+    let abl = ablPointer.assumingMemoryBound(to: AudioBufferList.self)
+    return UnsafeMutableAudioBufferListPointer(abl).reduce(0) { $0 + Int($1.mNumberChannels) }
+}
+
+func outputDeviceUIDExists(_ uid: String) -> Bool {
+    outputCapableDeviceIDs().contains {
+        stringProperty(of: $0, selector: kAudioDevicePropertyDeviceUID) == uid
     }
-    guard status == noErr else { return nil }
-    return uid as String
+}
+
+// --list-devices: print "uid\tname" per output-capable device and exit.
+// Runs before the isatty guard and the TCC re-exec — enumeration needs neither.
+if CommandLine.arguments.contains("--list-devices") {
+    for id in outputCapableDeviceIDs() {
+        guard let uid = stringProperty(of: id, selector: kAudioDevicePropertyDeviceUID) else { continue }
+        let name = stringProperty(of: id, selector: kAudioObjectPropertyName) ?? uid
+        print("\(uid)\t\(name)")
+    }
+    exit(0)
+}
+
+// --device <UID>: capture from this output device instead of the default one.
+var requestedUID: String? = nil
+if let i = CommandLine.arguments.firstIndex(of: "--device"), i + 1 < CommandLine.arguments.count {
+    requestedUID = CommandLine.arguments[i + 1]
 }
 
 if isatty(1) == 1 {
@@ -109,12 +171,16 @@ guard let sourceFormat = AVAudioFormat(streamDescription: &tapASBD) else {
     fail(1, "tap format not representable as AVAudioFormat")
 }
 
-// --- Private aggregate device: default output device + the tap. The tap shows
-// up as an input stream on the aggregate, which drives our IO proc at the
-// output device's cadence.
+// --- Private aggregate device: the chosen output device + the tap. The tap
+// shows up as an input stream on the aggregate, which drives our IO proc at
+// the output device's cadence.
 // Known limitation (see PLAN.md): if the default output device changes while
 // running, capture sticks to the old device until restart.
-guard let outputUID = defaultOutputDeviceUID() else {
+if let uid = requestedUID, !outputDeviceUIDExists(uid) {
+    note("capture device \(uid) not found; falling back to the default output device")
+    requestedUID = nil
+}
+guard let outputUID = requestedUID ?? defaultOutputDeviceUID() else {
     fail(1, "could not determine the default output device")
 }
 let aggregateDescription: [String: Any] = [

@@ -125,6 +125,7 @@ func runStream(ctx context.Context, cfg Config) error {
 	streamEnded := false
 	waitingForKey := false
 	pendingRestart := false
+	pendingCaptureRestart := false // relaunch audiotap too (capture device changed)
 
 	// A new realtime session assigns unrelated item IDs, so segments left open
 	// by the old one would block the finalization queue forever.
@@ -328,8 +329,13 @@ func runStream(ctx context.Context, cfg Config) error {
 						// realtime session too, not just in REST calls.
 						(cfg.sessionTranslates() && (cfg.TargetLang != before.TargetLang ||
 							cfg.ShowOriginal != before.ShowOriginal))
-					if sessionChanged && !streamEnded && !waitingForKey {
+					// A capture-device change goes further: the audiotap
+					// helper is pinned to its device for its lifetime, so it
+					// must be relaunched along with the session.
+					captureChanged := cfg.CaptureDevice != before.CaptureDevice && cfg.Input == ""
+					if (sessionChanged || captureChanged) && !streamEnded && !waitingForKey {
 						pendingRestart = true
+						pendingCaptureRestart = pendingCaptureRestart || captureChanged
 						sessionCancel()
 					}
 				}
@@ -349,6 +355,18 @@ func runStream(ctx context.Context, cfg Config) error {
 				streamDone = nil
 				retireOpen()
 				sync()
+				if pendingCaptureRestart {
+					// Retire the old helper asynchronously — its teardown
+					// waits up to 2 s and the new capture needn't queue
+					// behind it (separate private aggregate devices).
+					old := cleanup
+					go old()
+					src, cleanup, err = openPCMSource(ctx, cfg)
+					if err != nil {
+						return err
+					}
+					pendingCaptureRestart = false
+				}
 				startStream(cfg, key, src)
 				pendingRestart = false
 				continue
