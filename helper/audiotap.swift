@@ -37,6 +37,17 @@ func stringProperty(of objectID: AudioObjectID, selector: AudioObjectPropertySel
     return value as String
 }
 
+func nominalSampleRate(of deviceID: AudioObjectID) -> Double? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var rate = Double(0)
+    var size = UInt32(MemoryLayout<Double>.size)
+    guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate) == noErr, rate > 0 else { return nil }
+    return rate
+}
+
 func defaultOutputDeviceUID() -> String? {
     var address = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -158,7 +169,9 @@ if status != noErr || tapID == AudioObjectID(kAudioObjectUnknown) {
             "terminal in System Settings → Privacy & Security → Screen & System Audio Recording, then rerun.")
 }
 
-// --- The tap's native format (typically 48 kHz stereo float32).
+// --- The tap's declared format (typically 48 kHz stereo float32). Only the
+// channel layout is authoritative; the sample rate we actually receive is the
+// aggregate's, resolved below once it exists.
 var formatAddress = AudioObjectPropertyAddress(
     mSelector: kAudioTapPropertyFormat,
     mScope: kAudioObjectPropertyScopeGlobal,
@@ -167,9 +180,6 @@ var tapASBD = AudioStreamBasicDescription()
 var tapASBDSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
 status = AudioObjectGetPropertyData(tapID, &formatAddress, 0, nil, &tapASBDSize, &tapASBD)
 if status != noErr { fail(1, "reading tap format failed (OSStatus \(status))") }
-guard let sourceFormat = AVAudioFormat(streamDescription: &tapASBD) else {
-    fail(1, "tap format not representable as AVAudioFormat")
-}
 
 // --- Private aggregate device: the chosen output device + the tap. The tap
 // shows up as an input stream on the aggregate, which drives our IO proc at
@@ -201,6 +211,20 @@ let aggregateDescription: [String: Any] = [
 var aggregateID = AudioObjectID(kAudioObjectUnknown)
 status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &aggregateID)
 if status != noErr { fail(1, "creating aggregate device failed (OSStatus \(status))") }
+
+// --- The aggregate runs at its output device's clock, and the tap's buffers
+// arrive resampled to that rate — not the rate the tap declares. A Bluetooth
+// headset whose mic is open (a call) sits in the 16 kHz telephony profile;
+// converting its buffers as 48 kHz would hand the models 3× sped-up speech,
+// which they silently discard.
+var sourceASBD = tapASBD
+if let rate = nominalSampleRate(of: aggregateID), rate != tapASBD.mSampleRate {
+    note("output device clock is \(Int(rate)) Hz (tap declares \(Int(tapASBD.mSampleRate)) Hz) — converting from \(Int(rate)) Hz")
+    sourceASBD.mSampleRate = rate
+}
+guard let sourceFormat = AVAudioFormat(streamDescription: &sourceASBD) else {
+    fail(1, "tap format not representable as AVAudioFormat")
+}
 
 // --- Locate the tap on the aggregate's input side. When the default output
 // device also has inputs (a Bluetooth headset's microphone, an audio

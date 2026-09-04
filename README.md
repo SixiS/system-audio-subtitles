@@ -169,8 +169,13 @@ as audio — the gate only saves money when the Mac is actually silent.
 ```
 
 - **`helper/audiotap.swift`** — system-audio capture. Creates a global Core
-  Audio process tap (macOS 14.4+), wraps it in a private aggregate device,
-  converts to 24 kHz mono s16le, and writes raw PCM to stdout.
+  Audio process tap (macOS 14.4+), wraps it in a private aggregate device
+  hosted on the capture device, converts to 24 kHz mono s16le, and writes raw
+  PCM to stdout. The aggregate runs at the host device's clock and the tap's
+  audio arrives at that rate — so a Bluetooth headset whose mic is open on a
+  call (16 kHz telephony profile) is converted from 16 kHz, not the tap's
+  declared 48 kHz; a headset's own input streams are deactivated so its mic
+  is never captured.
 - **`helper/subtitlewindow.swift`** — the floating overlay. Reads JSON lines on
   stdin: `append` messages freeze text into the scrollable timestamped
   history, `live` messages rewrite the in-progress tail of the same column.
